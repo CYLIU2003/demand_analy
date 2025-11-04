@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+.venv/
+venv/
+.env
+.envrc
+
+# PyInstaller artifacts
+dist/
+build/
+*.spec
+
+# Java / Gradle
+jukyu_app_javafx/.gradle/
+jukyu_app_javafx/build/
+jukyu_app_javafx/bin/
+jukyu_app_javafx/tmp/
+
+# VS Code / IntelliJ
+.vscode/
+.idea/
+
+# OS noise
+.DS_Store
+Thumbs.db

@@ -1,0 +1,24 @@
+plugins {
+    id 'application'
+}
+
+repositories {
+    mavenCentral()
+}
+
+def javaFXVersion = '21.0.4'
+
+dependencies {
+    implementation "org.openjfx:javafx-controls:${javaFXVersion}"
+    implementation "org.openjfx:javafx-graphics:${javaFXVersion}"
+    implementation "org.openjfx:javafx-base:${javaFXVersion}"
+    implementation 'com.opencsv:opencsv:5.9'
+}
+
+application {
+    mainClass = 'app.Main'
+}
+
+tasks.withType(JavaExec) {
+    jvmArgs += ['--add-modules', 'javafx.controls']
+}
