@@ -4,16 +4,17 @@ This desktop client offers a richer, highly interactive experience for analysing
 
 ## Highlights
 
-- Tabbed UI separating the availability dashboard from advanced analysis tools.
+- Tabbed UI separating the availability dashboard, advanced analysis tools, and an AI lab.
 - Multi-select column list with "select all" helpers to quickly build comparison charts.
 - Customisable chart settings (title, axes labels, line width, figure size, font sizes, grid and legend toggles).
 - Integrated Matplotlib canvas with image export shortcut.
 - Resilient CSV loader that tries Shift_JIS/CP932/UTF-8 encodings and auto-detects datetime columns.
+- Experimental transformer forecaster that turns CSVs into machine-learning ready datasets and produces multi-step predictions.
 
 ## Requirements
 
 - Python 3.10 or later (tested with CPython).
-- PySide6 6.7.2, pandas 2.2.3, numpy 2.1.3, matplotlib 3.9.2. Install via the provided `requirements.txt`.
+- PySide6 6.7.2, pandas 2.2.3, numpy 2.1.3, matplotlib 3.9.2, scikit-learn 1.5.2, torch 2.4.1. Install via the provided `requirements.txt`.
 
 ## Installation & Launch
 
@@ -41,6 +42,14 @@ On macOS/Linux replace the activation command with `source .venv/bin/activate`.
 3. Select the generation categories you want to plot (use the "全選択" / "全解除" shortcuts for bulk actions).
 4. Adjust chart settings (title, labels, grid, legend, line width, figure size, etc.).
 5. Click **📈 グラフ更新** to render the Matplotlib chart, then **💾 グラフを保存** to export as PNG.
+
+### 🤖 AI Lab Workflow
+
+1. Open the **AI分析** tab and choose the area/year-month combination you wish to analyse.
+2. Select a numeric column (e.g., 総需要, 系統出力) as the forecasting target and click **📚 データ要約** to review the latest context window.
+3. Adjust the transformer hyperparameters (context length, prediction horizon, epochs, batch size, learning rate) to match your research design.
+4. Click **🤖 Transformer学習＆予測** to train the lightweight PyTorch model and generate forward predictions; training/validation losses and the resulting trajectory are shown in the log and table.
+5. Export the CSV or tweak parameters iteratively to compare baselines and transformer-driven forecasts.
 
 ## Packaging (Optional)
 
