@@ -31,7 +31,25 @@ When new files are added, relaunch the apps or trigger the reload buttons to ref
 | Toolchain | Key Versions | Launch Command |
 |-----------|--------------|----------------|
 | JavaFX    | JDK 17+, JavaFX 21.0.4, OpenCSV 5.9 | `./gradlew run` |
-| PySide6   | Python 3.10+, PySide6 6.7.2, pandas 2.2.3 | `python main.py` |
+| PySide6   | Python 3.10+, PySide6 6.7.2, pandas 2.2.3, scipy 1.11.4, statsmodels 0.14.1 | `python main.py` |
+
+## ✨ New Features (v2.0)
+
+The PySide6 application now includes advanced **statistical analysis** and **AI-powered time series forecasting**:
+
+### 📊 Statistical Analysis Tab
+- **Descriptive Statistics**: Mean, median, standard deviation, skewness, kurtosis, CV
+- **Distribution Analysis**: Histograms and box plots with outlier detection
+- **Correlation Analysis**: Heatmap visualization of power generation correlations
+- **Hourly Demand Patterns**: Time-of-day analysis with confidence intervals
+
+### 🤖 AI Forecasting Tab
+- **STL Decomposition**: Separate trend, seasonal, and residual components
+- **ARIMA Forecasting**: Statistical time series prediction with model evaluation
+- **Exponential Smoothing**: Holt-Winters method for short-term forecasting
+- **Model Evaluation**: MAE, RMSE, MAPE metrics with residual analysis
+
+For detailed documentation, see [FEATURES.md](FEATURES.md).
 
 ## Quick Start
 
