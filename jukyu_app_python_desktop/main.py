@@ -1034,13 +1034,22 @@ class MainWindow(QMainWindow):
             return
         
         try:
-            # STL分解（季節性の周期を24時間と仮定）
-            period = min(24, len(series) // 2)
-            if period < 2:
-                QtWidgets.QMessageBox.warning(self, "警告", f"データ数が不足しています。最低{period*2}サンプル必要です。")
+            # STL分解（季節性の周期を自動検出または24時間と仮定）
+            # 季節性周期は奇数である必要があり、最低7以上推奨
+            period = 24  # 24時間周期
+            
+            # データが少ない場合は周期を調整
+            if len(series) < period * 2:
+                period = max(7, len(series) // 3)
+                if period % 2 == 0:  # 奇数にする
+                    period += 1
+            
+            if len(series) < 2 * period:
+                QtWidgets.QMessageBox.warning(self, "警告", f"データ数が不足しています。最低{2*period}サンプル必要です（現在: {len(series)}）。")
                 return
             
-            stl = STL(series, seasonal=period, robust=True)
+            self.append_ai_log(f"STL分解を実行中（周期: {period}）...")
+            stl = STL(series.values, seasonal=period, robust=True)
             result = stl.fit()
             
             # プロット
@@ -1100,8 +1109,13 @@ class MainWindow(QMainWindow):
     
     def run_arima_forecast(self) -> None:
         """ARIMAモデルで予測"""
-        from statsmodels.tsa.arima.model import ARIMA
-        from sklearn.metrics import mean_absolute_error, mean_squared_error
+        try:
+            from statsmodels.tsa.arima.model import ARIMA
+            from sklearn.metrics import mean_absolute_error, mean_squared_error
+        except ImportError as e:
+            self.append_ai_log(f"ライブラリのインポートエラー: {str(e)}")
+            QtWidgets.QMessageBox.critical(self, "エラー", f"必要なライブラリがインストールされていません:\n{str(e)}\n\npip install statsmodels scikit-learn")
+            return
         
         self.append_ai_log("=" * 50)
         self.append_ai_log("ARIMA予測を開始します...")
@@ -1184,8 +1198,13 @@ class MainWindow(QMainWindow):
     
     def run_exponential_smoothing(self) -> None:
         """指数平滑法で予測"""
-        from statsmodels.tsa.holtwinters import ExponentialSmoothing
-        from sklearn.metrics import mean_absolute_error, mean_squared_error
+        try:
+            from statsmodels.tsa.holtwinters import ExponentialSmoothing
+            from sklearn.metrics import mean_absolute_error, mean_squared_error
+        except ImportError as e:
+            self.append_ai_log(f"ライブラリのインポートエラー: {str(e)}")
+            QtWidgets.QMessageBox.critical(self, "エラー", f"必要なライブラリがインストールされていません:\n{str(e)}\n\npip install statsmodels scikit-learn")
+            return
         
         self.append_ai_log("=" * 50)
         self.append_ai_log("指数平滑法による予測を開始します...")
