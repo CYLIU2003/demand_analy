@@ -40,6 +40,13 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ai_integration import (
+    ForecastConfig,
+    ForecastResult,
+    TORCH_AVAILABLE,
+    run_transformer_forecast,
+)
+
 # 日本語フォントの設定
 plt.rcParams['font.sans-serif'] = ['MS Gothic', 'Yu Gothic', 'Meiryo', 'DejaVu Sans']
 plt.rcParams['axes.unicode_minus'] = False
@@ -241,7 +248,13 @@ class MainWindow(QMainWindow):
         self.current_dataframe: Optional[pd.DataFrame] = None
         self.current_time_column: Optional[str] = None
         self.current_dataset_key: Optional[str] = None
-        
+
+        # AI予測用の状態
+        self.ai_dataframe: Optional[pd.DataFrame] = None
+        self.ai_time_column: Optional[str] = None
+        self.ai_target_columns: List[str] = []
+        self.ai_result: Optional[ForecastResult] = None
+
         self.apply_modern_palette()
 
         # タブウィジェット作成
@@ -280,7 +293,11 @@ class MainWindow(QMainWindow):
         # 詳細ページタブ
         self.detail_page = self.create_detail_page()
         self.tabs.addTab(self.detail_page, "📈 詳細分析")
-        
+
+        # AI予測タブ
+        self.ai_page = self.create_ai_page()
+        self.tabs.addTab(self.ai_page, "🤖 AI予測")
+
         self.setCentralWidget(self.tabs)
 
         # (YYYYMM, area code, path) tuples discovered under data/.
@@ -289,6 +306,7 @@ class MainWindow(QMainWindow):
         self.refresh_heatmap()
         self.area_combo.currentIndexChanged.connect(self.on_area_change)
         self.on_area_change()
+        self.on_ai_area_change()
 
     def create_main_page(self):
         """メインページの作成"""
@@ -407,9 +425,195 @@ class MainWindow(QMainWindow):
         
         content.setSizes([350, 350, 700])
         main_layout.addWidget(content)
-        
+
         return page
-    
+
+    def create_ai_page(self):
+        """AI予測タブの作成"""
+
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(15)
+
+        title = QLabel("🤖 Transformer需要予測ラボ")
+        title.setStyleSheet("font-size: 20px; font-weight: 700; color: #5b21b6;")
+        layout.addWidget(title)
+
+        description = QLabel(
+            "PyTorchベースのTransformerモデルで短期需要予測を試せます。"
+            " 研究用途向けにハイパーパラメータも調整可能です。"
+        )
+        description.setWordWrap(True)
+        description.setStyleSheet("color: #4c1d95; font-size: 13px;")
+        layout.addWidget(description)
+
+        form = QGridLayout()
+        form.setHorizontalSpacing(14)
+        form.setVerticalSpacing(10)
+
+        area_label = QLabel("エリア")
+        area_label.setStyleSheet("font-weight: 600; color: #5b21b6;")
+        self.ai_area_combo = QComboBox()
+        self.ai_area_combo.setMinimumWidth(160)
+        for code, meta in AREA_INFO.items():
+            self.ai_area_combo.addItem(f"({code}) {meta.name}", code)
+        self.ai_area_combo.currentIndexChanged.connect(self.on_ai_area_change)
+
+        ym_label = QLabel("年月")
+        ym_label.setStyleSheet("font-weight: 600; color: #5b21b6;")
+        self.ai_ym_combo = QComboBox()
+        self.ai_ym_combo.setMinimumWidth(140)
+        self.ai_ym_combo.currentIndexChanged.connect(self.on_ai_ym_change)
+
+        target_label = QLabel("ターゲット列")
+        target_label.setStyleSheet("font-weight: 600; color: #5b21b6;")
+        self.ai_target_combo = QComboBox()
+        self.ai_target_combo.setMinimumWidth(200)
+
+        window_label = QLabel("入力ウィンドウ")
+        window_label.setStyleSheet("font-weight: 600; color: #5b21b6;")
+        self.ai_input_spin = QSpinBox()
+        self.ai_input_spin.setRange(6, 720)
+        self.ai_input_spin.setValue(48)
+        self.ai_input_spin.setSuffix(" ステップ")
+
+        horizon_label = QLabel("予測期間")
+        horizon_label.setStyleSheet("font-weight: 600; color: #5b21b6;")
+        self.ai_horizon_spin = QSpinBox()
+        self.ai_horizon_spin.setRange(1, 240)
+        self.ai_horizon_spin.setValue(24)
+        self.ai_horizon_spin.setSuffix(" ステップ")
+
+        epoch_label = QLabel("エポック")
+        epoch_label.setStyleSheet("font-weight: 600; color: #5b21b6;")
+        self.ai_epoch_spin = QSpinBox()
+        self.ai_epoch_spin.setRange(5, 300)
+        self.ai_epoch_spin.setValue(40)
+
+        lr_label = QLabel("学習率")
+        lr_label.setStyleSheet("font-weight: 600; color: #5b21b6;")
+        self.ai_lr_spin = QDoubleSpinBox()
+        self.ai_lr_spin.setDecimals(5)
+        self.ai_lr_spin.setRange(1e-5, 1e-1)
+        self.ai_lr_spin.setValue(1e-3)
+        self.ai_lr_spin.setSingleStep(1e-4)
+
+        form.addWidget(area_label, 0, 0)
+        form.addWidget(self.ai_area_combo, 0, 1)
+        form.addWidget(ym_label, 0, 2)
+        form.addWidget(self.ai_ym_combo, 0, 3)
+        form.addWidget(target_label, 1, 0)
+        form.addWidget(self.ai_target_combo, 1, 1, 1, 3)
+        form.addWidget(window_label, 2, 0)
+        form.addWidget(self.ai_input_spin, 2, 1)
+        form.addWidget(horizon_label, 2, 2)
+        form.addWidget(self.ai_horizon_spin, 2, 3)
+        form.addWidget(epoch_label, 3, 0)
+        form.addWidget(self.ai_epoch_spin, 3, 1)
+        form.addWidget(lr_label, 3, 2)
+        form.addWidget(self.ai_lr_spin, 3, 3)
+
+        layout.addLayout(form)
+
+        self.ai_train_btn = QPushButton("🚀 学習して予測")
+        self.ai_train_btn.setMinimumHeight(44)
+        self.ai_train_btn.setStyleSheet(
+            """
+            QPushButton {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                                             stop:0 #8b5cf6, stop:1 #6d28d9);
+                color: white;
+                font-weight: bold;
+                font-size: 14px;
+            }
+            QPushButton:hover {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                                             stop:0 #a855f7, stop:1 #7c3aed);
+            }
+            QPushButton:disabled {
+                background-color: #c4b5fd;
+                color: #ede9fe;
+            }
+            """
+        )
+        self.ai_train_btn.clicked.connect(self.run_ai_forecast)
+        layout.addWidget(self.ai_train_btn)
+
+        self.ai_status_label = QLabel("モデルの実行状況がここに表示されます。")
+        self.ai_status_label.setStyleSheet("color: #4338ca; font-size: 12px;")
+        layout.addWidget(self.ai_status_label)
+
+        if not TORCH_AVAILABLE:
+            warning = QLabel(
+                "⚠️ PyTorchが見つかりません。`pip install torch` を実行してAI予測機能を有効にしてください。"
+            )
+            warning.setWordWrap(True)
+            warning.setStyleSheet("color: #b91c1c; font-weight: 600;")
+            layout.addWidget(warning)
+            self.ai_train_btn.setEnabled(False)
+
+        splitter = QSplitter(Qt.Vertical)
+
+        table_frame = QFrame()
+        table_frame.setStyleSheet(
+            """
+            QFrame {
+                border: 2px solid #c4b5fd;
+                border-radius: 10px;
+                background-color: #f5f3ff;
+            }
+            """
+        )
+        table_layout = QVBoxLayout(table_frame)
+        table_layout.setContentsMargins(8, 8, 8, 8)
+        table_title = QLabel("📄 予測結果サマリ")
+        table_title.setStyleSheet("font-weight: 600; color: #5b21b6;")
+        table_layout.addWidget(table_title)
+
+        self.ai_result_table = QTableWidget()
+        self.ai_result_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+        self.ai_result_table.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.Stretch)
+        self.ai_result_table.verticalHeader().setVisible(False)
+        self.ai_result_table.setAlternatingRowColors(True)
+        self.ai_result_table.setStyleSheet(
+            """
+            QTableWidget {
+                background-color: #ffffff;
+                alternate-background-color: #ede9fe;
+                border: none;
+            }
+            """
+        )
+        table_layout.addWidget(self.ai_result_table)
+
+        chart_frame = QFrame()
+        chart_frame.setStyleSheet(
+            """
+            QFrame {
+                border: 2px solid #c4b5fd;
+                border-radius: 10px;
+                background-color: #ffffff;
+            }
+            """
+        )
+        chart_layout = QVBoxLayout(chart_frame)
+        chart_layout.setContentsMargins(8, 8, 8, 8)
+        chart_title = QLabel("📈 予測 vs 実測")
+        chart_title.setStyleSheet("font-weight: 600; color: #5b21b6;")
+        chart_layout.addWidget(chart_title)
+
+        self.ai_canvas = MplCanvas(width=10, height=4.5, dpi=110)
+        chart_layout.addWidget(self.ai_canvas, stretch=1)
+
+        splitter.addWidget(table_frame)
+        splitter.addWidget(chart_frame)
+        splitter.setSizes([260, 420])
+
+        layout.addWidget(splitter, stretch=1)
+
+        return page
+
     def create_data_selection_panel(self):
         """データ選択パネル"""
         panel = QWidget()
@@ -1094,6 +1298,262 @@ class MainWindow(QMainWindow):
                 pass
 
         self.populate_preview_table(df)
+
+    # -------------------- AI予測タブ関連 --------------------
+
+    def clear_ai_outputs(self, message: str = "") -> None:
+        if hasattr(self, "ai_result_table"):
+            self.ai_result_table.clear()
+            self.ai_result_table.setRowCount(0)
+            self.ai_result_table.setColumnCount(0)
+        if hasattr(self, "ai_canvas"):
+            self.ai_canvas.ax.clear()
+            self.ai_canvas.draw()
+        if message and hasattr(self, "ai_status_label"):
+            self.ai_status_label.setText(message)
+
+    def on_ai_area_change(self):
+        if not hasattr(self, "ai_area_combo"):
+            return
+
+        code = self.ai_area_combo.currentData()
+        if code is None:
+            return
+
+        self.files = scan_files()
+        yms = sorted([ym for (ym, area, _) in self.files if area == code])
+        self.ai_ym_combo.blockSignals(True)
+        self.ai_ym_combo.clear()
+        for ym in yms:
+            self.ai_ym_combo.addItem(f"{ym[:4]}年{ym[4:6]}月", ym)
+        self.ai_ym_combo.blockSignals(False)
+
+        if yms:
+            self.ai_ym_combo.setCurrentIndex(len(yms) - 1)
+            self.on_ai_ym_change()
+        else:
+            self.ai_target_combo.clear()
+            self.ai_dataframe = None
+            self.ai_time_column = None
+            self.clear_ai_outputs("選択したエリアのCSVが見つかりません。")
+
+    def on_ai_ym_change(self):
+        if self.ai_area_combo.currentData() is None:
+            return
+
+        code = self.ai_area_combo.currentData()
+        ym = self.ai_ym_combo.currentData()
+        if not ym or not code:
+            return
+
+        path = DATA_DIR / f"eria_jukyu_{ym}_{code}.csv"
+        if not path.exists():
+            self.ai_target_combo.clear()
+            self.ai_dataframe = None
+            self.ai_time_column = None
+            self.clear_ai_outputs("選択された年月のCSVが見つかりません。")
+            return
+
+        try:
+            df, tcol = read_csv(path)
+        except Exception as exc:
+            self.ai_target_combo.clear()
+            self.ai_dataframe = None
+            self.ai_time_column = None
+            self.clear_ai_outputs(f"CSVの読み込みに失敗しました: {exc}")
+            return
+
+        numeric_candidates: List[str] = []
+        for column in df.columns:
+            if column == tcol:
+                continue
+            series = pd.to_numeric(df[column], errors="coerce")
+            if series.notna().sum() >= 10:
+                numeric_candidates.append(str(column))
+
+        self.ai_dataframe = df
+        self.ai_time_column = tcol
+        self.ai_target_columns = numeric_candidates
+
+        self.ai_target_combo.blockSignals(True)
+        self.ai_target_combo.clear()
+        for name in numeric_candidates:
+            self.ai_target_combo.addItem(name)
+        self.ai_target_combo.blockSignals(False)
+
+        if not numeric_candidates:
+            self.clear_ai_outputs("数値として扱える列が見つかりませんでした。")
+        else:
+            self.clear_ai_outputs("ターゲット列を選択し、学習を実行してください。")
+
+    def run_ai_forecast(self):
+        if not TORCH_AVAILABLE:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "PyTorch未導入",
+                "AI予測を利用するには `pip install torch` でPyTorchをインストールしてください。",
+            )
+            return
+
+        if self.ai_dataframe is None:
+            QtWidgets.QMessageBox.warning(self, "データ未選択", "予測対象のCSVを選んでください。")
+            return
+
+        target = self.ai_target_combo.currentText()
+        if not target:
+            QtWidgets.QMessageBox.warning(self, "ターゲット未選択", "予測したい列を選択してください。")
+            return
+
+        df = self.ai_dataframe.copy()
+        tcol = self.ai_time_column
+
+        if tcol and tcol in df.columns:
+            df = df.sort_values(tcol)
+            timestamps = pd.to_datetime(df[tcol], errors="coerce")
+        else:
+            timestamps = None
+
+        target_series = pd.to_numeric(df[target], errors="coerce")
+        valid_mask = target_series.notna()
+        if timestamps is not None:
+            valid_mask = valid_mask & timestamps.notna()
+            timestamps = timestamps[valid_mask]
+
+        target_series = target_series[valid_mask]
+
+        if len(target_series) <= self.ai_input_spin.value() + self.ai_horizon_spin.value():
+            QtWidgets.QMessageBox.warning(
+                self,
+                "データ不足",
+                "学習に必要なデータ数が不足しています。ウィンドウや予測期間を短くしてください。",
+            )
+            return
+
+        config = ForecastConfig(
+            input_window=self.ai_input_spin.value(),
+            forecast_horizon=self.ai_horizon_spin.value(),
+            epochs=self.ai_epoch_spin.value(),
+            learning_rate=self.ai_lr_spin.value(),
+        )
+
+        try:
+            result = run_transformer_forecast(
+                series=target_series,
+                timestamps=timestamps,
+                target_name=target,
+                config=config,
+            )
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(
+                self,
+                "予測失敗",
+                f"Transformerモデルの実行中にエラーが発生しました:\n{exc}",
+            )
+            return
+
+        self.ai_result = result
+        self.update_ai_table(result)
+        self.update_ai_chart(result)
+
+        metric_texts = []
+        for key in ["MAE", "RMSE", "MAPE"]:
+            value = result.metrics.get(key)
+            if value is None or np.isnan(value):
+                continue
+            if key == "MAPE":
+                metric_texts.append(f"{key}: {value:.2f}%")
+            else:
+                metric_texts.append(f"{key}: {value:,.1f} MW")
+        metrics_joined = " / ".join(metric_texts)
+        if metrics_joined:
+            self.ai_status_label.setText(
+                f"{target} の予測が完了しました。{metrics_joined}"
+            )
+        else:
+            self.ai_status_label.setText(f"{target} の予測が完了しました。")
+
+    def update_ai_table(self, result: ForecastResult) -> None:
+        headers = ["日時", "予測(MW)", "実測(MW)", "誤差(MW)"]
+        rows = len(result.predicted)
+
+        self.ai_result_table.setColumnCount(len(headers))
+        self.ai_result_table.setHorizontalHeaderLabels(headers)
+        self.ai_result_table.setRowCount(rows)
+
+        for row in range(rows):
+            ts = result.forecast_index[row]
+            if isinstance(ts, (pd.Timestamp, datetime)):
+                ts_text = pd.to_datetime(ts).strftime("%Y-%m-%d %H:%M")
+            else:
+                ts_text = str(ts)
+
+            pred = float(result.predicted[row])
+            actual_val = None if result.actual is None else float(result.actual[row])
+            error_val = None if actual_val is None else pred - actual_val
+
+            items = [
+                QTableWidgetItem(ts_text),
+                QTableWidgetItem(f"{pred:,.1f}"),
+                QTableWidgetItem("" if actual_val is None else f"{actual_val:,.1f}"),
+                QTableWidgetItem(
+                    "" if error_val is None else f"{error_val:+,.1f}"
+                ),
+            ]
+
+            for col, item in enumerate(items):
+                align = Qt.AlignCenter if col == 0 else Qt.AlignRight | Qt.AlignVCenter
+                item.setTextAlignment(align)
+                self.ai_result_table.setItem(row, col, item)
+
+        self.ai_result_table.resizeRowsToContents()
+
+    def update_ai_chart(self, result: ForecastResult) -> None:
+        ax = self.ai_canvas.ax
+        ax.clear()
+        ax.set_facecolor("#f5f3ff")
+        ax.tick_params(colors="#312e81", labelsize=11)
+        for spine in ax.spines.values():
+            spine.set_color("#a5b4fc")
+
+        ax.plot(
+            result.context_index,
+            result.context_values,
+            label="学習コンテキスト",
+            color="#6366f1",
+            linewidth=2.0,
+            alpha=0.9,
+        )
+
+        ax.plot(
+            result.forecast_index,
+            result.predicted,
+            label="予測値",
+            color="#a855f7",
+            linewidth=2.4,
+            marker="o",
+        )
+
+        if result.actual is not None:
+            ax.plot(
+                result.forecast_index,
+                result.actual,
+                label="実測値",
+                color="#f97316",
+                linewidth=2.0,
+                linestyle="--",
+                marker="s",
+            )
+
+        ax.set_ylabel("電力 (MW)", color="#312e81", fontsize=12, fontweight="bold")
+        ax.set_xlabel("時刻", color="#312e81", fontsize=12, fontweight="bold")
+        ax.grid(True, linestyle="--", alpha=0.25, color="#c7d2fe")
+        ax.legend(loc="best", facecolor="#ffffff", edgecolor="#a5b4fc")
+
+        title = f"{result.target_name} - Transformer予測"
+        ax.set_title(title, color="#4c1d95", fontsize=14, fontweight="bold")
+        self.ai_canvas.fig.autofmt_xdate(rotation=45)
+        self.ai_canvas.fig.tight_layout(pad=2.0)
+        self.ai_canvas.draw()
 
     def render_view(self):
         code = self.area_combo.currentData()

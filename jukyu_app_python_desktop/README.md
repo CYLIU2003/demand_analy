@@ -9,6 +9,7 @@ This desktop client offers a richer, highly interactive experience for analysing
 - Customisable chart settings (title, axes labels, line width, figure size, font sizes, grid and legend toggles).
 - Integrated Matplotlib canvas with image export shortcut.
 - Resilient CSV loader that tries Shift_JIS/CP932/UTF-8 encodings and auto-detects datetime columns.
+- "🤖 AI予測" tab that embeds a lightweight Transformer forecaster for academic experiments (PyTorch optional).
 
 ## Requirements
 
@@ -41,6 +42,25 @@ On macOS/Linux replace the activation command with `source .venv/bin/activate`.
 3. Select the generation categories you want to plot (use the "全選択" / "全解除" shortcuts for bulk actions).
 4. Adjust chart settings (title, labels, grid, legend, line width, figure size, etc.).
 5. Click **📈 グラフ更新** to render the Matplotlib chart, then **💾 グラフを保存** to export as PNG.
+
+### AI Forecasting Lab (Optional)
+
+- Install PyTorch (CPU build is sufficient) to enable the **🤖 AI予測** tab:
+
+  ```bash
+  pip install torch --index-url https://download.pytorch.org/whl/cpu
+  ```
+
+- The tab lets you:
+  - Select an area/month CSV and choose any numeric column as the forecasting target.
+  - Tune Transformer hyper-parameters (input window, forecast horizon, epochs, learning rate).
+  - Train a compact encoder-only Transformer on the fly and compare predictions vs. actual demand.
+  - Export the metrics (MAE, RMSE, MAPE) displayed in the status banner for research documentation.
+
+- Data quality tips:
+  - Ensure the chosen target column has at least `(input_window + forecast_horizon)` non-null records.
+  - When the CSV includes a timestamp column, it is used to align the training context and forecast timeline.
+  - Missing timestamps default to an hourly synthetic index for experimentation.
 
 ## Packaging (Optional)
 
