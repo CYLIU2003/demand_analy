@@ -296,12 +296,7 @@ class MainWindow(QMainWindow):
 
         # AI分析タブ
         self.ai_page = self.create_ai_page()
-        ai_tab_index = self.tabs.addTab(self.ai_page, "🤖 AI分析")
-        
-        # PyTorchがインストールされていない場合はAIタブを無効化
-        if not TRANSFORMER_AVAILABLE:
-            self.tabs.setTabEnabled(ai_tab_index, False)
-            self.tabs.setTabToolTip(ai_tab_index, "AI機能を使用するにはPyTorchをインストールしてください: pip install torch")
+        self.tabs.addTab(self.ai_page, "🤖 AI分析")
 
         self.setCentralWidget(self.tabs)
 
