@@ -998,8 +998,12 @@ class MainWindow(QMainWindow):
         timestamp = datetime.now().strftime("%H:%M:%S")
         self.ai_log_output.appendPlainText(f"[{timestamp}] {message}")
     
-    def get_ai_data_series(self):
-        """AI分析用のデータ系列を取得"""
+    def get_ai_data_series(self, interpolate=False):
+        """AI分析用のデータ系列を取得
+        
+        Args:
+            interpolate: Trueの場合、欠損値を線形補間する（STL分解など時系列の連続性が必要な場合）
+        """
         if self.ai_dataframe is None:
             self.load_ai_dataset()
         
@@ -1013,13 +1017,27 @@ class MainWindow(QMainWindow):
             return None, None
         
         series = pd.to_numeric(self.ai_dataframe[target_column], errors="coerce")
-        series_clean = series.dropna()
+        
+        missing_count = series.isna().sum()
+        
+        if interpolate and missing_count > 0:
+            # 線形補間で欠損値を埋める（時系列の連続性を保つ）
+            series_clean = series.interpolate(method='linear', limit_direction='both')
+            # まだNaNが残っている場合は前方/後方埋め
+            series_clean = series_clean.ffill().bfill()
+            self.append_ai_log(f"データ読込: {len(series_clean)}サンプル, 欠損値補間: {missing_count}個")
+        else:
+            # 欠損値を削除（予測モデルなど）
+            series_clean = series.dropna()
+            if missing_count > 0:
+                self.append_ai_log(f"データ読込: {len(series_clean)}サンプル, 欠損値削除: {missing_count}個")
+            else:
+                self.append_ai_log(f"データ読込: {len(series_clean)}サンプル")
         
         if len(series_clean) < 10:
             QtWidgets.QMessageBox.warning(self, "警告", "データが不足しています（最低10サンプル必要）。")
             return None, None
         
-        self.append_ai_log(f"データ読込: {len(series_clean)}サンプル, 欠損値: {series.isna().sum()}")
         return series_clean, target_column
     
     def run_stl_decomposition(self) -> None:
@@ -1029,7 +1047,8 @@ class MainWindow(QMainWindow):
         self.append_ai_log("=" * 50)
         self.append_ai_log("STL時系列分解を開始します...")
         
-        series, col_name = self.get_ai_data_series()
+        # 補間を有効にして連続した時系列データを取得
+        series, col_name = self.get_ai_data_series(interpolate=True)
         if series is None:
             return
         
