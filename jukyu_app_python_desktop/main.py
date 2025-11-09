@@ -38,11 +38,12 @@ from PySide6.QtWidgets import (
     QTableWidget,
     QTableWidgetItem,
     QTabWidget,
+    QTextEdit,
     QVBoxLayout,
     QWidget,
 )
 
-from ml import DemandTransformerForecaster, ForecastResult
+from ml import DemandTransformerForecaster, ForecastResult, TRANSFORMER_AVAILABLE
 
 # 日本語フォントの設定
 plt.rcParams['font.sans-serif'] = ['MS Gothic', 'Yu Gothic', 'Meiryo', 'DejaVu Sans']
@@ -222,7 +223,7 @@ class MainWindow(QMainWindow):
 
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("⚡ 電力需給実績ビューア")
+        self.setWindowTitle("電力需給実績ビューア")
         self.resize(1400, 840)
         
         # グラフ設定のデフォルト値
@@ -295,7 +296,12 @@ class MainWindow(QMainWindow):
 
         # AI分析タブ
         self.ai_page = self.create_ai_page()
-        self.tabs.addTab(self.ai_page, "🤖 AI分析")
+        ai_tab_index = self.tabs.addTab(self.ai_page, "🤖 AI分析")
+        
+        # PyTorchがインストールされていない場合はAIタブを無効化
+        if not TRANSFORMER_AVAILABLE:
+            self.tabs.setTabEnabled(ai_tab_index, False)
+            self.tabs.setTabToolTip(ai_tab_index, "AI機能を使用するにはPyTorchをインストールしてください: pip install torch")
 
         self.setCentralWidget(self.tabs)
 
@@ -307,6 +313,10 @@ class MainWindow(QMainWindow):
         self.area_combo.currentIndexChanged.connect(self.on_area_change)
         self.on_area_change()
         self.populate_ai_controls()
+        
+        # 統計分析タブの初期化
+        if hasattr(self, 'stats_area_combo'):
+            self.on_stats_area_change()
 
     def create_main_page(self):
         """メインページの作成"""
@@ -319,7 +329,7 @@ class MainWindow(QMainWindow):
         header = QHBoxLayout()
         header.setSpacing(12)
         
-        title_label = QLabel("⚡ 電力需給実績データビューア")
+        title_label = QLabel("電力需給実績データビューア")
         title_label.setStyleSheet("""
             font-size: 24px; 
             font-weight: bold; 
@@ -393,7 +403,7 @@ class MainWindow(QMainWindow):
         return page
 
     def create_detail_page(self):
-        """詳細ページの作成"""
+        """統計分析ページの作成"""
         page = QWidget()
         main_layout = QVBoxLayout(page)
         main_layout.setContentsMargins(20, 20, 20, 20)
@@ -401,144 +411,244 @@ class MainWindow(QMainWindow):
         
         # ヘッダー
         header = QHBoxLayout()
+        title = QLabel("📊 統計分析")
+        title.setStyleSheet("font-size: 20px; font-weight: 600; color: #0068B7;")
+        header.addWidget(title)
+        header.addStretch()
         back_btn = QPushButton("← メインに戻る")
         back_btn.setMinimumHeight(36)
         back_btn.clicked.connect(lambda: self.tabs.setCurrentIndex(0))
         header.addWidget(back_btn)
-        header.addStretch()
         main_layout.addLayout(header)
         
-        # 3分割レイアウト
-        content = QSplitter(Qt.Horizontal)
+        desc = QLabel("選択したデータセットの統計的特性を分析します。")
+        desc.setWordWrap(True)
+        main_layout.addWidget(desc)
         
-        # 左パネル: データ選択
-        left_panel = self.create_data_selection_panel()
-        content.addWidget(left_panel)
+        # データ選択とコントロール
+        control_layout = QHBoxLayout()
         
-        # 中央パネル: グラフ設定
-        center_panel = self.create_graph_settings_panel()
-        content.addWidget(center_panel)
+        # エリア選択
+        control_layout.addWidget(QLabel("エリア:"))
+        self.stats_area_combo = QComboBox()
+        for code, meta in AREA_INFO.items():
+            self.stats_area_combo.addItem(f"({code}) {meta.name}", code)
+        self.stats_area_combo.currentIndexChanged.connect(self.on_stats_area_change)
+        control_layout.addWidget(self.stats_area_combo)
         
-        # 右パネル: グラフ表示
-        right_panel = self.create_graph_display_panel()
-        content.addWidget(right_panel)
+        # 年月選択
+        control_layout.addWidget(QLabel("年月:"))
+        self.stats_ym_combo = QComboBox()
+        self.stats_ym_combo.currentIndexChanged.connect(self.on_stats_ym_change)
+        control_layout.addWidget(self.stats_ym_combo)
         
-        content.setSizes([350, 350, 700])
-        main_layout.addWidget(content)
-
+        # 分析実行ボタン
+        self.stats_analyze_btn = QPushButton("📈 統計分析実行")
+        self.stats_analyze_btn.setMinimumHeight(40)
+        self.stats_analyze_btn.setStyleSheet("""
+            QPushButton {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                                          stop:0 #0068B7, stop:1 #005291);
+                color: white;
+                font-size: 14px;
+                font-weight: bold;
+                border-radius: 5px;
+                padding: 5px 15px;
+            }
+            QPushButton:hover {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                                          stop:0 #0080e0, stop:1 #0068B7);
+            }
+        """)
+        self.stats_analyze_btn.clicked.connect(self.run_statistical_analysis)
+        control_layout.addWidget(self.stats_analyze_btn)
+        
+        control_layout.addStretch()
+        main_layout.addLayout(control_layout)
+        
+        # タブウィジェット（分析結果を複数のタブで表示）
+        self.stats_tabs = QTabWidget()
+        self.stats_tabs.setStyleSheet("""
+            QTabWidget::pane {
+                border: 2px solid #a0d2ff;
+                border-radius: 8px;
+                background-color: white;
+            }
+            QTabBar::tab {
+                background: #f0f0f0;
+                padding: 8px 16px;
+                margin-right: 2px;
+            }
+            QTabBar::tab:selected {
+                background: #0068B7;
+                color: white;
+            }
+        """)
+        
+        # 基本統計量タブ
+        self.stats_summary_widget = QTextEdit()
+        self.stats_summary_widget.setReadOnly(True)
+        self.stats_summary_widget.setStyleSheet("font-family: 'Courier New', monospace; padding: 10px;")
+        self.stats_tabs.addTab(self.stats_summary_widget, "基本統計量")
+        
+        # 時系列プロットタブ
+        self.stats_timeseries_canvas = MplCanvas(width=10, height=6)
+        self.stats_tabs.addTab(self.stats_timeseries_canvas, "時系列プロット")
+        
+        # 分布分析タブ
+        self.stats_distribution_canvas = MplCanvas(width=10, height=6)
+        self.stats_tabs.addTab(self.stats_distribution_canvas, "分布分析")
+        
+        # 相関分析タブ
+        self.stats_correlation_canvas = MplCanvas(width=10, height=6)
+        self.stats_tabs.addTab(self.stats_correlation_canvas, "相関分析")
+        
+        # 時間帯別分析タブ
+        self.stats_hourly_canvas = MplCanvas(width=10, height=6)
+        self.stats_tabs.addTab(self.stats_hourly_canvas, "時間帯別分析")
+        
+        main_layout.addWidget(self.stats_tabs)
+        
         return page
 
     def create_ai_page(self) -> QWidget:
-        """AIモデルを活用した分析タブを構築"""
+        """時系列予測と分析タブを構築"""
 
         page = QWidget()
         layout = QVBoxLayout(page)
         layout.setContentsMargins(20, 20, 20, 20)
         layout.setSpacing(15)
 
+        # ヘッダー
         header = QHBoxLayout()
-        title = QLabel("🤖 AI 需給分析ラボ")
+        title = QLabel("🤖 時系列予測・分析")
         title.setStyleSheet("font-size: 20px; font-weight: 600; color: #0068B7;")
         header.addWidget(title)
         header.addStretch()
+        back_btn = QPushButton("← メインに戻る")
+        back_btn.setMinimumHeight(36)
+        back_btn.clicked.connect(lambda: self.tabs.setCurrentIndex(0))
+        header.addWidget(back_btn)
         layout.addLayout(header)
 
-        desc = QLabel(
-            "Transformerベースの需要予測モデルを試すための実験的なラボです。"
-            "選択したCSVから目的の系列を取り出し、学習と予測を実行できます。"
-        )
+        desc = QLabel("時系列分解、統計的予測手法、機械学習モデルによる需要予測を実行します。")
         desc.setWordWrap(True)
         layout.addWidget(desc)
 
-        selection_group = QGroupBox("データセット選択")
-        selection_form = QFormLayout()
-
+        # データ選択とコントロール
+        control_layout = QHBoxLayout()
+        
+        control_layout.addWidget(QLabel("エリア:"))
         self.ai_area_combo = QComboBox()
         self.ai_area_combo.setMinimumHeight(32)
         for code, meta in AREA_INFO.items():
             self.ai_area_combo.addItem(f"({code}) {meta.name}", code)
         self.ai_area_combo.currentIndexChanged.connect(self.on_ai_area_change)
-        selection_form.addRow("エリア", self.ai_area_combo)
+        control_layout.addWidget(self.ai_area_combo)
 
+        control_layout.addWidget(QLabel("年月:"))
         self.ai_ym_combo = QComboBox()
         self.ai_ym_combo.setMinimumHeight(32)
         self.ai_ym_combo.currentIndexChanged.connect(self.on_ai_ym_change)
-        selection_form.addRow("年月", self.ai_ym_combo)
+        control_layout.addWidget(self.ai_ym_combo)
 
+        control_layout.addWidget(QLabel("目的系列:"))
         self.ai_column_combo = QComboBox()
         self.ai_column_combo.setMinimumHeight(32)
-        selection_form.addRow("目的系列", self.ai_column_combo)
-
-        selection_group.setLayout(selection_form)
-        layout.addWidget(selection_group)
-
-        params_group = QGroupBox("Transformerハイパーパラメータ")
-        params_form = QFormLayout()
-
-        self.ai_context_spin = QSpinBox()
-        self.ai_context_spin.setRange(12, 5000)
-        self.ai_context_spin.setValue(96)
-        params_form.addRow("コンテキスト長", self.ai_context_spin)
-
+        control_layout.addWidget(self.ai_column_combo)
+        
+        control_layout.addStretch()
+        layout.addLayout(control_layout)
+        
+        # 分析手法選択ボタン
+        method_layout = QHBoxLayout()
+        method_layout.addWidget(QLabel("分析手法:"))
+        
+        self.decompose_btn = QPushButton("📊 時系列分解 (STL)")
+        self.decompose_btn.setMinimumHeight(40)
+        self.decompose_btn.clicked.connect(self.run_stl_decomposition)
+        method_layout.addWidget(self.decompose_btn)
+        
+        self.arima_btn = QPushButton("📈 ARIMA予測")
+        self.arima_btn.setMinimumHeight(40)
+        self.arima_btn.clicked.connect(self.run_arima_forecast)
+        method_layout.addWidget(self.arima_btn)
+        
+        self.exp_smooth_btn = QPushButton("📉 指数平滑法")
+        self.exp_smooth_btn.setMinimumHeight(40)
+        self.exp_smooth_btn.clicked.connect(self.run_exponential_smoothing)
+        method_layout.addWidget(self.exp_smooth_btn)
+        
+        if TRANSFORMER_AVAILABLE:
+            self.transformer_btn = QPushButton("🤖 Transformer")
+            self.transformer_btn.setMinimumHeight(40)
+            self.transformer_btn.clicked.connect(self.run_transformer_forecast)
+            method_layout.addWidget(self.transformer_btn)
+        
+        method_layout.addStretch()
+        layout.addLayout(method_layout)
+        
+        # パラメータ設定
+        param_layout = QHBoxLayout()
+        param_layout.addWidget(QLabel("予測期間:"))
         self.ai_horizon_spin = QSpinBox()
         self.ai_horizon_spin.setRange(1, 240)
         self.ai_horizon_spin.setValue(24)
-        params_form.addRow("予測ステップ数", self.ai_horizon_spin)
+        self.ai_horizon_spin.setMinimumHeight(32)
+        param_layout.addWidget(self.ai_horizon_spin)
+        
+        param_layout.addWidget(QLabel("訓練データ比率:"))
+        self.train_ratio_spin = QDoubleSpinBox()
+        self.train_ratio_spin.setRange(0.5, 0.95)
+        self.train_ratio_spin.setSingleStep(0.05)
+        self.train_ratio_spin.setValue(0.8)
+        self.train_ratio_spin.setMinimumHeight(32)
+        param_layout.addWidget(self.train_ratio_spin)
+        
+        param_layout.addStretch()
+        layout.addLayout(param_layout)
 
-        self.ai_epoch_spin = QSpinBox()
-        self.ai_epoch_spin.setRange(1, 200)
-        self.ai_epoch_spin.setValue(30)
-        params_form.addRow("エポック", self.ai_epoch_spin)
-
-        self.ai_batch_spin = QSpinBox()
-        self.ai_batch_spin.setRange(4, 512)
-        self.ai_batch_spin.setValue(64)
-        params_form.addRow("バッチサイズ", self.ai_batch_spin)
-
-        self.ai_lr_spin = QDoubleSpinBox()
-        self.ai_lr_spin.setDecimals(5)
-        self.ai_lr_spin.setRange(1e-5, 1e-1)
-        self.ai_lr_spin.setSingleStep(1e-4)
-        self.ai_lr_spin.setValue(5e-4)
-        params_form.addRow("学習率", self.ai_lr_spin)
-
-        params_group.setLayout(params_form)
-        layout.addWidget(params_group)
-
-        btn_row = QHBoxLayout()
-        self.ai_prepare_btn = QPushButton("📚 データ要約")
-        self.ai_prepare_btn.clicked.connect(self.prepare_ai_dataset)
-        btn_row.addWidget(self.ai_prepare_btn)
-
-        self.ai_train_btn = QPushButton("🤖 Transformer学習＆予測")
-        self.ai_train_btn.clicked.connect(self.train_transformer_model)
-        btn_row.addWidget(self.ai_train_btn)
-
-        btn_row.addStretch()
-        layout.addLayout(btn_row)
-
-        self.ai_log_output = QPlainTextEdit()
-        self.ai_log_output.setReadOnly(True)
-        self.ai_log_output.setPlaceholderText("AI分析の進捗がここに表示されます…")
-        layout.addWidget(self.ai_log_output)
-
-        self.ai_result_table = QTableWidget()
-        self.ai_result_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
-        self.ai_result_table.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.Stretch)
-        self.ai_result_table.verticalHeader().setVisible(False)
-        self.ai_result_table.setAlternatingRowColors(True)
-        self.ai_result_table.setStyleSheet(
-            """
-            QTableWidget {
+        # タブウィジェット（分析結果）
+        self.ai_tabs = QTabWidget()
+        self.ai_tabs.setStyleSheet("""
+            QTabWidget::pane {
                 border: 2px solid #a0d2ff;
                 border-radius: 8px;
-                background-color: #ffffff;
-                alternate-background-color: #f8fafc;
+                background-color: white;
             }
-            """
-        )
-        layout.addWidget(self.ai_result_table, stretch=1)
-
+            QTabBar::tab {
+                background: #f0f0f0;
+                padding: 8px 16px;
+                margin-right: 2px;
+            }
+            QTabBar::tab:selected {
+                background: #0068B7;
+                color: white;
+            }
+        """)
+        
+        # ログタブ
+        self.ai_log_output = QPlainTextEdit()
+        self.ai_log_output.setReadOnly(True)
+        self.ai_log_output.setPlaceholderText("分析ログがここに表示されます…")
+        self.ai_tabs.addTab(self.ai_log_output, "ログ")
+        
+        # 分析結果タブ
+        self.ai_result_canvas = MplCanvas(width=12, height=8)
+        self.ai_tabs.addTab(self.ai_result_canvas, "予測結果")
+        
+        # モデル評価タブ
+        self.ai_eval_widget = QTextEdit()
+        self.ai_eval_widget.setReadOnly(True)
+        self.ai_eval_widget.setStyleSheet("font-family: 'Courier New', monospace; padding: 10px;")
+        self.ai_tabs.addTab(self.ai_eval_widget, "モデル評価")
+        
+        # 残差分析タブ
+        self.ai_residual_canvas = MplCanvas(width=12, height=6)
+        self.ai_tabs.addTab(self.ai_residual_canvas, "残差分析")
+        
+        layout.addWidget(self.ai_tabs)
+        
         return page
 
     def refresh_area_year_months(self) -> None:
@@ -568,6 +678,258 @@ class MainWindow(QMainWindow):
             if idx >= 0:
                 self.ai_area_combo.setCurrentIndex(idx)
         self.on_ai_area_change()
+    
+    def on_stats_area_change(self) -> None:
+        """統計分析: エリア変更時"""
+        if not hasattr(self, "stats_ym_combo"):
+            return
+        code = self.stats_area_combo.currentData()
+        self.stats_ym_combo.blockSignals(True)
+        self.stats_ym_combo.clear()
+        for ym in self.area_year_months.get(code, []):
+            display = f"{ym[:4]}年{ym[4:6]}月"
+            self.stats_ym_combo.addItem(display, ym)
+        self.stats_ym_combo.blockSignals(False)
+        if self.stats_ym_combo.count() > 0:
+            self.stats_ym_combo.setCurrentIndex(0)
+    
+    def on_stats_ym_change(self) -> None:
+        """統計分析: 年月変更時"""
+        pass
+    
+    def run_statistical_analysis(self) -> None:
+        """統計分析を実行"""
+        code = self.stats_area_combo.currentData()
+        ym = self.stats_ym_combo.currentData()
+        
+        if not code or not ym:
+            QtWidgets.QMessageBox.warning(self, "警告", "エリアと年月を選択してください。")
+            return
+        
+        path = DATA_DIR / f"eria_jukyu_{ym}_{code}.csv"
+        if not path.exists():
+            QtWidgets.QMessageBox.warning(self, "エラー", f"ファイルが見つかりません: {path.name}")
+            return
+        
+        try:
+            df, time_col = read_csv(path)
+            
+            # 数値列を取得
+            numeric_cols = [col for col in df.columns if pd.api.types.is_numeric_dtype(df[col])]
+            
+            if len(numeric_cols) == 0:
+                QtWidgets.QMessageBox.warning(self, "エラー", "数値データが見つかりません。")
+                return
+            
+            # 基本統計量を計算
+            self.display_basic_statistics(df, numeric_cols, time_col)
+            
+            # 時系列プロットを描画
+            self.plot_timeseries_analysis(df, numeric_cols, time_col)
+            
+            # 分布分析を描画
+            self.plot_distribution_analysis(df, numeric_cols)
+            
+            # 相関分析を描画
+            self.plot_correlation_analysis(df, numeric_cols)
+            
+            # 時間帯別分析を描画
+            self.plot_hourly_analysis(df, numeric_cols, time_col)
+            
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(self, "エラー", f"分析中にエラーが発生しました:\n{str(e)}")
+    
+    def display_basic_statistics(self, df: pd.DataFrame, numeric_cols: list, time_col: Optional[str]) -> None:
+        """基本統計量を表示"""
+        import io
+        from scipy import stats as scipy_stats
+        
+        output = io.StringIO()
+        output.write("=" * 80 + "\n")
+        output.write("基本統計量レポート\n")
+        output.write("=" * 80 + "\n\n")
+        
+        output.write(f"データ期間: {len(df)}行\n")
+        if time_col and time_col in df.columns:
+            try:
+                time_series = pd.to_datetime(df[time_col])
+                output.write(f"開始時刻: {time_series.min()}\n")
+                output.write(f"終了時刻: {time_series.max()}\n")
+            except:
+                pass
+        output.write("\n")
+        
+        # 主要な列の統計量
+        key_columns = [col for col in ["発電実績(万kW)", "需要実績(万kW)", "揚水発電実績(万kW)"] if col in numeric_cols]
+        if not key_columns:
+            key_columns = numeric_cols[:3]  # 最初の3列
+        
+        for col in key_columns:
+            output.write(f"\n【{col}】\n")
+            output.write("-" * 60 + "\n")
+            
+            data = df[col].dropna()
+            if len(data) == 0:
+                output.write("  データなし\n")
+                continue
+            
+            output.write(f"  サンプル数:     {len(data):>12,}\n")
+            output.write(f"  平均値:         {data.mean():>12,.2f}\n")
+            output.write(f"  中央値:         {data.median():>12,.2f}\n")
+            output.write(f"  標準偏差:       {data.std():>12,.2f}\n")
+            output.write(f"  最小値:         {data.min():>12,.2f}\n")
+            output.write(f"  最大値:         {data.max():>12,.2f}\n")
+            output.write(f"  範囲:           {data.max() - data.min():>12,.2f}\n")
+            output.write(f"  25%分位点:      {data.quantile(0.25):>12,.2f}\n")
+            output.write(f"  75%分位点:      {data.quantile(0.75):>12,.2f}\n")
+            output.write(f"  四分位範囲:     {data.quantile(0.75) - data.quantile(0.25):>12,.2f}\n")
+            
+            # 歪度と尖度
+            try:
+                skewness = scipy_stats.skew(data)
+                kurtosis = scipy_stats.kurtosis(data)
+                output.write(f"  歪度:           {skewness:>12,.4f}  (0=対称, >0=右裾, <0=左裾)\n")
+                output.write(f"  尖度:           {kurtosis:>12,.4f}  (0=正規分布, >0=尖鋭, <0=平坦)\n")
+            except:
+                pass
+            
+            # 変動係数
+            cv = (data.std() / data.mean() * 100) if data.mean() != 0 else 0
+            output.write(f"  変動係数 (CV):  {cv:>12,.2f}%\n")
+        
+        output.write("\n" + "=" * 80 + "\n")
+        
+        self.stats_summary_widget.setPlainText(output.getvalue())
+    
+    def plot_timeseries_analysis(self, df: pd.DataFrame, numeric_cols: list, time_col: Optional[str]) -> None:
+        """時系列分析プロット"""
+        self.stats_timeseries_canvas.ax.clear()
+        
+        # 時間列を取得
+        if time_col and time_col in df.columns:
+            try:
+                x = pd.to_datetime(df[time_col])
+            except:
+                x = range(len(df))
+        else:
+            x = range(len(df))
+        
+        # 主要な列をプロット
+        key_columns = [col for col in ["需要実績(万kW)", "発電実績(万kW)"] if col in numeric_cols]
+        if not key_columns:
+            key_columns = numeric_cols[:2]
+        
+        for col in key_columns:
+            self.stats_timeseries_canvas.ax.plot(x, df[col], label=col, linewidth=1.5, alpha=0.8)
+        
+        self.stats_timeseries_canvas.ax.set_xlabel("時刻", fontsize=11)
+        self.stats_timeseries_canvas.ax.set_ylabel("電力 (万kW)", fontsize=11)
+        self.stats_timeseries_canvas.ax.set_title("時系列トレンド分析", fontsize=14, fontweight='bold', color='#0068B7')
+        self.stats_timeseries_canvas.ax.legend(loc='best', framealpha=0.95)
+        self.stats_timeseries_canvas.ax.grid(True, alpha=0.3)
+        self.stats_timeseries_canvas.fig.tight_layout()
+        self.stats_timeseries_canvas.draw()
+    
+    def plot_distribution_analysis(self, df: pd.DataFrame, numeric_cols: list) -> None:
+        """分布分析プロット (ヒストグラムとボックスプロット)"""
+        self.stats_distribution_canvas.fig.clear()
+        
+        key_columns = [col for col in ["需要実績(万kW)", "発電実績(万kW)"] if col in numeric_cols]
+        if not key_columns:
+            key_columns = numeric_cols[:2]
+        
+        n_cols = len(key_columns)
+        
+        for i, col in enumerate(key_columns):
+            # ヒストグラム
+            ax1 = self.stats_distribution_canvas.fig.add_subplot(2, n_cols, i + 1)
+            data = df[col].dropna()
+            ax1.hist(data, bins=50, alpha=0.7, color='#0068B7', edgecolor='black')
+            ax1.axvline(data.mean(), color='red', linestyle='--', linewidth=2, label=f'平均: {data.mean():.1f}')
+            ax1.axvline(data.median(), color='green', linestyle='--', linewidth=2, label=f'中央値: {data.median():.1f}')
+            ax1.set_xlabel(col, fontsize=9)
+            ax1.set_ylabel("頻度", fontsize=9)
+            ax1.set_title(f"{col} - 分布", fontsize=10)
+            ax1.legend(fontsize=8)
+            ax1.grid(True, alpha=0.3)
+            
+            # ボックスプロット
+            ax2 = self.stats_distribution_canvas.fig.add_subplot(2, n_cols, n_cols + i + 1)
+            ax2.boxplot(data, vert=True, patch_artist=True,
+                       boxprops=dict(facecolor='#a0d2ff'),
+                       medianprops=dict(color='red', linewidth=2))
+            ax2.set_ylabel(col, fontsize=9)
+            ax2.set_title(f"{col} - 箱ひげ図", fontsize=10)
+            ax2.grid(True, alpha=0.3, axis='y')
+        
+        self.stats_distribution_canvas.fig.suptitle("分布特性分析", fontsize=14, fontweight='bold', color='#0068B7')
+        self.stats_distribution_canvas.fig.tight_layout()
+        self.stats_distribution_canvas.draw()
+    
+    def plot_correlation_analysis(self, df: pd.DataFrame, numeric_cols: list) -> None:
+        """相関分析ヒートマップ"""
+        self.stats_correlation_canvas.ax.clear()
+        
+        # 相関行列を計算
+        corr_matrix = df[numeric_cols].corr()
+        
+        # ヒートマップを描画
+        im = self.stats_correlation_canvas.ax.imshow(corr_matrix, cmap='coolwarm', aspect='auto', vmin=-1, vmax=1)
+        
+        # 軸ラベルを設定
+        self.stats_correlation_canvas.ax.set_xticks(range(len(numeric_cols)))
+        self.stats_correlation_canvas.ax.set_yticks(range(len(numeric_cols)))
+        self.stats_correlation_canvas.ax.set_xticklabels(numeric_cols, rotation=45, ha='right', fontsize=8)
+        self.stats_correlation_canvas.ax.set_yticklabels(numeric_cols, fontsize=8)
+        
+        # 相関係数を表示
+        for i in range(len(numeric_cols)):
+            for j in range(len(numeric_cols)):
+                text = self.stats_correlation_canvas.ax.text(j, i, f'{corr_matrix.iloc[i, j]:.2f}',
+                                           ha="center", va="center", color="black", fontsize=7)
+        
+        self.stats_correlation_canvas.ax.set_title("発電方式間の相関分析", fontsize=14, fontweight='bold', color='#0068B7')
+        self.stats_correlation_canvas.fig.colorbar(im, ax=self.stats_correlation_canvas.ax, label='相関係数')
+        self.stats_correlation_canvas.fig.tight_layout()
+        self.stats_correlation_canvas.draw()
+    
+    def plot_hourly_analysis(self, df: pd.DataFrame, numeric_cols: list, time_col: Optional[str]) -> None:
+        """時間帯別分析 (時刻別の平均・標準偏差)"""
+        self.stats_hourly_canvas.ax.clear()
+        
+        # 時刻情報を抽出
+        if time_col and time_col in df.columns:
+            try:
+                df['hour'] = pd.to_datetime(df[time_col]).dt.hour
+            except:
+                QtWidgets.QMessageBox.warning(self, "警告", "時刻情報を抽出できませんでした。")
+                return
+        else:
+            QtWidgets.QMessageBox.warning(self, "警告", "時刻列が見つかりません。")
+            return
+        
+        # 主要列
+        key_col = "需要実績(万kW)" if "需要実績(万kW)" in numeric_cols else numeric_cols[0]
+        
+        # 時間帯別の統計量を計算
+        hourly_stats = df.groupby('hour')[key_col].agg(['mean', 'std', 'min', 'max'])
+        
+        hours = hourly_stats.index
+        means = hourly_stats['mean']
+        stds = hourly_stats['std']
+        
+        # 平均値と信頼区間をプロット
+        self.stats_hourly_canvas.ax.plot(hours, means, 'o-', linewidth=2, markersize=6, label='平均値', color='#0068B7')
+        self.stats_hourly_canvas.ax.fill_between(hours, means - stds, means + stds, alpha=0.3, label='±1標準偏差')
+        
+        self.stats_hourly_canvas.ax.set_xlabel("時刻", fontsize=11)
+        self.stats_hourly_canvas.ax.set_ylabel(key_col, fontsize=11)
+        self.stats_hourly_canvas.ax.set_title(f"時間帯別需要パターン分析 ({key_col})", fontsize=14, fontweight='bold', color='#0068B7')
+        self.stats_hourly_canvas.ax.set_xticks(range(0, 24, 2))
+        self.stats_hourly_canvas.ax.legend(loc='best')
+        self.stats_hourly_canvas.ax.grid(True, alpha=0.3)
+        self.stats_hourly_canvas.fig.tight_layout()
+        self.stats_hourly_canvas.draw()
 
     def on_ai_area_change(self) -> None:
         """Populate the year-month combo when the area changes."""
@@ -640,6 +1002,330 @@ class MainWindow(QMainWindow):
             return
         timestamp = datetime.now().strftime("%H:%M:%S")
         self.ai_log_output.appendPlainText(f"[{timestamp}] {message}")
+    
+    def get_ai_data_series(self):
+        """AI分析用のデータ系列を取得"""
+        if self.ai_dataframe is None:
+            self.load_ai_dataset()
+        
+        if self.ai_dataframe is None:
+            QtWidgets.QMessageBox.warning(self, "警告", "データが読み込まれていません。")
+            return None, None
+        
+        target_column = self.ai_column_combo.currentText()
+        if not target_column:
+            QtWidgets.QMessageBox.warning(self, "警告", "目的系列を選択してください。")
+            return None, None
+        
+        series = pd.to_numeric(self.ai_dataframe[target_column], errors="coerce")
+        series_clean = series.dropna()
+        
+        if len(series_clean) < 10:
+            QtWidgets.QMessageBox.warning(self, "警告", "データが不足しています（最低10サンプル必要）。")
+            return None, None
+        
+        self.append_ai_log(f"データ読込: {len(series_clean)}サンプル, 欠損値: {series.isna().sum()}")
+        return series_clean, target_column
+    
+    def run_stl_decomposition(self) -> None:
+        """STL時系列分解を実行"""
+        from statsmodels.tsa.seasonal import STL
+        
+        self.append_ai_log("=" * 50)
+        self.append_ai_log("STL時系列分解を開始します...")
+        
+        series, col_name = self.get_ai_data_series()
+        if series is None:
+            return
+        
+        try:
+            # STL分解（季節性の周期を24時間と仮定）
+            period = min(24, len(series) // 2)
+            if period < 2:
+                QtWidgets.QMessageBox.warning(self, "警告", f"データ数が不足しています。最低{period*2}サンプル必要です。")
+                return
+            
+            stl = STL(series, seasonal=period, robust=True)
+            result = stl.fit()
+            
+            # プロット
+            self.ai_result_canvas.fig.clear()
+            
+            ax1 = self.ai_result_canvas.fig.add_subplot(4, 1, 1)
+            ax1.plot(series.values, label='元データ', color='#0068B7', linewidth=1)
+            ax1.set_ylabel('観測値', fontsize=10)
+            ax1.legend(loc='upper right', fontsize=9)
+            ax1.grid(True, alpha=0.3)
+            ax1.set_title(f'STL時系列分解: {col_name}', fontsize=12, fontweight='bold', color='#0068B7')
+            
+            ax2 = self.ai_result_canvas.fig.add_subplot(4, 1, 2)
+            ax2.plot(result.trend, label='トレンド', color='#10b981', linewidth=1.5)
+            ax2.set_ylabel('トレンド', fontsize=10)
+            ax2.legend(loc='upper right', fontsize=9)
+            ax2.grid(True, alpha=0.3)
+            
+            ax3 = self.ai_result_canvas.fig.add_subplot(4, 1, 3)
+            ax3.plot(result.seasonal, label='季節性', color='#f59e0b', linewidth=1)
+            ax3.set_ylabel('季節性', fontsize=10)
+            ax3.legend(loc='upper right', fontsize=9)
+            ax3.grid(True, alpha=0.3)
+            
+            ax4 = self.ai_result_canvas.fig.add_subplot(4, 1, 4)
+            ax4.plot(result.resid, label='残差', color='#ef4444', linewidth=0.8, alpha=0.7)
+            ax4.set_ylabel('残差', fontsize=10)
+            ax4.set_xlabel('時刻インデックス', fontsize=10)
+            ax4.legend(loc='upper right', fontsize=9)
+            ax4.grid(True, alpha=0.3)
+            
+            self.ai_result_canvas.fig.tight_layout()
+            self.ai_result_canvas.draw()
+            
+            # 統計量を出力
+            self.ai_eval_widget.setPlainText(
+                f"STL分解統計量\n{'='*60}\n\n"
+                f"トレンド成分:\n"
+                f"  平均: {result.trend.mean():.2f}\n"
+                f"  標準偏差: {result.trend.std():.2f}\n"
+                f"  範囲: [{result.trend.min():.2f}, {result.trend.max():.2f}]\n\n"
+                f"季節性成分:\n"
+                f"  振幅: {(result.seasonal.max() - result.seasonal.min()):.2f}\n"
+                f"  周期: {period}\n\n"
+                f"残差成分:\n"
+                f"  平均: {result.resid.mean():.4f}\n"
+                f"  標準偏差: {result.resid.std():.2f}\n"
+                f"  ホワイトノイズ性の検証推奨\n"
+            )
+            
+            self.append_ai_log("STL分解が完了しました。")
+            self.ai_tabs.setCurrentIndex(1)  # 結果タブに切り替え
+            
+        except Exception as e:
+            self.append_ai_log(f"エラー: {str(e)}")
+            QtWidgets.QMessageBox.critical(self, "エラー", f"STL分解に失敗しました:\n{str(e)}")
+    
+    def run_arima_forecast(self) -> None:
+        """ARIMAモデルで予測"""
+        from statsmodels.tsa.arima.model import ARIMA
+        from sklearn.metrics import mean_absolute_error, mean_squared_error
+        
+        self.append_ai_log("=" * 50)
+        self.append_ai_log("ARIMA予測を開始します...")
+        
+        series, col_name = self.get_ai_data_series()
+        if series is None:
+            return
+        
+        try:
+            # 訓練/テストデータ分割
+            train_ratio = self.train_ratio_spin.value()
+            train_size = int(len(series) * train_ratio)
+            train, test = series[:train_size], series[train_size:]
+            
+            if len(test) == 0:
+                QtWidgets.QMessageBox.warning(self, "警告", "テストデータがありません。訓練データ比率を下げてください。")
+                return
+            
+            self.append_ai_log(f"訓練データ: {len(train)}サンプル, テストデータ: {len(test)}サンプル")
+            
+            # ARIMAモデル (p=5, d=1, q=0) - 自動調整も可能
+            model = ARIMA(train, order=(5, 1, 0))
+            fitted = model.fit()
+            
+            # 予測
+            forecast_steps = min(self.ai_horizon_spin.value(), len(test))
+            forecast = fitted.forecast(steps=forecast_steps)
+            
+            # 評価指標
+            actual = test[:forecast_steps]
+            mae = mean_absolute_error(actual, forecast)
+            rmse = np.sqrt(mean_squared_error(actual, forecast))
+            mape = np.mean(np.abs((actual - forecast) / actual)) * 100
+            
+            # プロット
+            self.ai_result_canvas.fig.clear()
+            ax = self.ai_result_canvas.fig.add_subplot(1, 1, 1)
+            
+            # 訓練データ
+            ax.plot(range(len(train)), train.values, label='訓練データ', color='#0068B7', linewidth=1.5, alpha=0.8)
+            
+            # テストデータ
+            test_idx = range(len(train), len(train) + len(actual))
+            ax.plot(test_idx, actual.values, label='実測値', color='#10b981', linewidth=1.5)
+            
+            # 予測値
+            ax.plot(test_idx, forecast, label='ARIMA予測', color='#ef4444', linewidth=2, linestyle='--')
+            
+            ax.set_xlabel('時刻インデックス', fontsize=11)
+            ax.set_ylabel(col_name, fontsize=11)
+            ax.set_title(f'ARIMA予測結果 (order=(5,1,0))', fontsize=14, fontweight='bold', color='#0068B7')
+            ax.legend(loc='best', fontsize=10)
+            ax.grid(True, alpha=0.3)
+            
+            self.ai_result_canvas.fig.tight_layout()
+            self.ai_result_canvas.draw()
+            
+            # 評価結果
+            self.ai_eval_widget.setPlainText(
+                f"ARIMA予測モデル評価\n{'='*60}\n\n"
+                f"モデル: ARIMA(5, 1, 0)\n"
+                f"訓練サンプル数: {len(train)}\n"
+                f"予測期間: {forecast_steps}ステップ\n\n"
+                f"評価指標:\n"
+                f"  MAE  (平均絶対誤差):     {mae:.4f}\n"
+                f"  RMSE (二乗平均平方根誤差): {rmse:.4f}\n"
+                f"  MAPE (平均絶対パーセント誤差): {mape:.2f}%\n\n"
+                f"モデル要約:\n{fitted.summary().as_text()}"
+            )
+            
+            # 残差分析
+            self.plot_residual_analysis(fitted.resid)
+            
+            self.append_ai_log(f"ARIMA予測完了 - MAE: {mae:.2f}, RMSE: {rmse:.2f}, MAPE: {mape:.2f}%")
+            self.ai_tabs.setCurrentIndex(1)
+            
+        except Exception as e:
+            self.append_ai_log(f"エラー: {str(e)}")
+            QtWidgets.QMessageBox.critical(self, "エラー", f"ARIMA予測に失敗しました:\n{str(e)}")
+    
+    def run_exponential_smoothing(self) -> None:
+        """指数平滑法で予測"""
+        from statsmodels.tsa.holtwinters import ExponentialSmoothing
+        from sklearn.metrics import mean_absolute_error, mean_squared_error
+        
+        self.append_ai_log("=" * 50)
+        self.append_ai_log("指数平滑法による予測を開始します...")
+        
+        series, col_name = self.get_ai_data_series()
+        if series is None:
+            return
+        
+        try:
+            # 訓練/テストデータ分割
+            train_ratio = self.train_ratio_spin.value()
+            train_size = int(len(series) * train_ratio)
+            train, test = series[:train_size], series[train_size:]
+            
+            if len(test) == 0:
+                QtWidgets.QMessageBox.warning(self, "警告", "テストデータがありません。")
+                return
+            
+            self.append_ai_log(f"訓練データ: {len(train)}サンプル, テストデータ: {len(test)}サンプル")
+            
+            # Holt-Winters法（加法モデル、季節性24時間）
+            seasonal_periods = min(24, len(train) // 2)
+            if seasonal_periods < 2:
+                # 季節性なしモデル
+                model = ExponentialSmoothing(train, trend='add', seasonal=None)
+                self.append_ai_log("季節性なしモデルを使用")
+            else:
+                model = ExponentialSmoothing(train, trend='add', seasonal='add', seasonal_periods=seasonal_periods)
+                self.append_ai_log(f"季節性ありモデルを使用（周期: {seasonal_periods}）")
+            
+            fitted = model.fit()
+            
+            # 予測
+            forecast_steps = min(self.ai_horizon_spin.value(), len(test))
+            forecast = fitted.forecast(steps=forecast_steps)
+            
+            # 評価
+            actual = test[:forecast_steps]
+            mae = mean_absolute_error(actual, forecast)
+            rmse = np.sqrt(mean_squared_error(actual, forecast))
+            mape = np.mean(np.abs((actual - forecast) / actual)) * 100
+            
+            # プロット
+            self.ai_result_canvas.fig.clear()
+            ax = self.ai_result_canvas.fig.add_subplot(1, 1, 1)
+            
+            ax.plot(range(len(train)), train.values, label='訓練データ', color='#0068B7', linewidth=1.5, alpha=0.8)
+            test_idx = range(len(train), len(train) + len(actual))
+            ax.plot(test_idx, actual.values, label='実測値', color='#10b981', linewidth=1.5)
+            ax.plot(test_idx, forecast, label='指数平滑法予測', color='#f59e0b', linewidth=2, linestyle='--')
+            
+            ax.set_xlabel('時刻インデックス', fontsize=11)
+            ax.set_ylabel(col_name, fontsize=11)
+            ax.set_title('Holt-Winters指数平滑法予測', fontsize=14, fontweight='bold', color='#0068B7')
+            ax.legend(loc='best', fontsize=10)
+            ax.grid(True, alpha=0.3)
+            
+            self.ai_result_canvas.fig.tight_layout()
+            self.ai_result_canvas.draw()
+            
+            # 評価結果
+            self.ai_eval_widget.setPlainText(
+                f"指数平滑法予測モデル評価\n{'='*60}\n\n"
+                f"モデル: Holt-Winters (加法モデル)\n"
+                f"訓練サンプル数: {len(train)}\n"
+                f"予測期間: {forecast_steps}ステップ\n\n"
+                f"評価指標:\n"
+                f"  MAE  (平均絶対誤差):     {mae:.4f}\n"
+                f"  RMSE (二乗平均平方根誤差): {rmse:.4f}\n"
+                f"  MAPE (平均絶対パーセント誤差): {mape:.2f}%\n\n"
+                f"パラメータ:\n"
+                f"  Alpha (レベル平滑化): {fitted.params['smoothing_level']:.4f}\n"
+                f"  Beta  (トレンド平滑化): {fitted.params.get('smoothing_trend', 0):.4f}\n"
+                f"  Gamma (季節性平滑化): {fitted.params.get('smoothing_seasonal', 0):.4f}\n"
+            )
+            
+            # 残差分析
+            residuals = train - fitted.fittedvalues
+            self.plot_residual_analysis(residuals)
+            
+            self.append_ai_log(f"指数平滑法予測完了 - MAE: {mae:.2f}, RMSE: {rmse:.2f}, MAPE: {mape:.2f}%")
+            self.ai_tabs.setCurrentIndex(1)
+            
+        except Exception as e:
+            self.append_ai_log(f"エラー: {str(e)}")
+            QtWidgets.QMessageBox.critical(self, "エラー", f"指数平滑法予測に失敗しました:\n{str(e)}")
+    
+    def run_transformer_forecast(self) -> None:
+        """Transformer予測（既存機能を呼び出し）"""
+        if not TRANSFORMER_AVAILABLE:
+            QtWidgets.QMessageBox.warning(self, "警告", "PyTorchがインストールされていません。")
+            return
+        
+        self.append_ai_log("=" * 50)
+        self.append_ai_log("Transformer予測は未実装です。従来のTransformer機能を使用してください。")
+        QtWidgets.QMessageBox.information(self, "情報", "Transformer予測機能は開発中です。")
+    
+    def plot_residual_analysis(self, residuals) -> None:
+        """残差分析プロット"""
+        from scipy import stats as scipy_stats
+        
+        self.ai_residual_canvas.fig.clear()
+        
+        # 残差の時系列プロット
+        ax1 = self.ai_residual_canvas.fig.add_subplot(2, 2, 1)
+        ax1.plot(residuals, color='#ef4444', linewidth=0.8)
+        ax1.axhline(y=0, color='black', linestyle='--', linewidth=1)
+        ax1.set_title('残差の時系列', fontsize=10, fontweight='bold')
+        ax1.set_xlabel('時刻インデックス', fontsize=9)
+        ax1.set_ylabel('残差', fontsize=9)
+        ax1.grid(True, alpha=0.3)
+        
+        # 残差のヒストグラム
+        ax2 = self.ai_residual_canvas.fig.add_subplot(2, 2, 2)
+        ax2.hist(residuals, bins=30, color='#0068B7', alpha=0.7, edgecolor='black')
+        ax2.set_title('残差の分布', fontsize=10, fontweight='bold')
+        ax2.set_xlabel('残差', fontsize=9)
+        ax2.set_ylabel('頻度', fontsize=9)
+        ax2.grid(True, alpha=0.3, axis='y')
+        
+        # Q-Qプロット
+        ax3 = self.ai_residual_canvas.fig.add_subplot(2, 2, 3)
+        scipy_stats.probplot(residuals, dist="norm", plot=ax3)
+        ax3.set_title('Q-Qプロット（正規性検定）', fontsize=10, fontweight='bold')
+        ax3.grid(True, alpha=0.3)
+        
+        # ACF（自己相関）
+        ax4 = self.ai_residual_canvas.fig.add_subplot(2, 2, 4)
+        from statsmodels.graphics.tsaplots import plot_acf
+        plot_acf(residuals, ax=ax4, lags=min(40, len(residuals)//2), alpha=0.05)
+        ax4.set_title('自己相関（ACF）', fontsize=10, fontweight='bold')
+        ax4.set_xlabel('ラグ', fontsize=9)
+        
+        self.ai_residual_canvas.fig.tight_layout()
+        self.ai_residual_canvas.draw()
 
     def prepare_ai_dataset(self) -> None:
         if self.ai_dataframe is None:
@@ -713,8 +1399,8 @@ class MainWindow(QMainWindow):
         series = pd.to_numeric(self.ai_target_series, errors="coerce")
         series_interpolated = (
             series.interpolate(limit_direction="both")
-            .fillna(method="bfill")
-            .fillna(method="ffill")
+            .bfill()
+            .ffill()
         )
         context_length = self.ai_context_spin.value()
         prediction_length = self.ai_horizon_spin.value()
@@ -777,7 +1463,7 @@ class MainWindow(QMainWindow):
         if self.ai_time_column and self.ai_dataframe is not None and self.ai_time_column in self.ai_dataframe.columns:
             try:
                 time_series = pd.to_datetime(self.ai_dataframe[self.ai_time_column], errors="coerce")
-                history_times = time_series.iloc[-history_len:]
+                history_times = time_series.iloc[-history_len:].reset_index(drop=True)
             except Exception:
                 history_times = pd.Series([None] * history_len)
         else:
@@ -785,8 +1471,8 @@ class MainWindow(QMainWindow):
 
         for row, (idx, value) in enumerate(zip(history_index, result.history)):
             ts_text = ""
-            if history_times[row] is not None and pd.notna(history_times[row]):
-                ts_text = pd.to_datetime(history_times[row]).strftime("%Y-%m-%d %H:%M")
+            if row < len(history_times) and history_times.iloc[row] is not None and pd.notna(history_times.iloc[row]):
+                ts_text = pd.to_datetime(history_times.iloc[row]).strftime("%Y-%m-%d %H:%M")
             else:
                 ts_text = str(idx)
             self.ai_result_table.setItem(row, 0, QTableWidgetItem("履歴"))
@@ -1429,25 +2115,11 @@ class MainWindow(QMainWindow):
                 self.heat_table.setItem(r, c, cell)
 
     def on_area_change(self):
+        """メインページ: エリア変更時にヒートマップを更新"""
         self.files = scan_files()
         self.avail, self.years, self.months = build_availability(self.files)
-        code = self.area_combo.currentData()
-        yms = sorted([ym for (ym, a, _) in self.files if a == code])
-        self.ym_combo.blockSignals(True)
-        self.ym_combo.clear()
-        for ym in yms:
-            self.ym_combo.addItem(f"{ym[:4]}年{ym[4:6]}月", ym)
-        self.ym_combo.blockSignals(False)
+        self.refresh_area_year_months()
         self.refresh_heatmap()
-        if self.ym_combo.count() > 0:
-            self.ym_combo.blockSignals(True)
-            self.ym_combo.setCurrentIndex(self.ym_combo.count() - 1)
-            self.ym_combo.blockSignals(False)
-            self.on_ym_change()
-        else:
-            self.date_combo.clear()
-            self.date_combo.addItem("全期間", "all")
-            self.populate_preview_table(None)
 
     def on_ym_change(self):
         """年月が変更された時に日付リストを更新"""
@@ -1619,7 +2291,7 @@ class MainWindow(QMainWindow):
         if self.graph_settings['title']:
             title_text = self.graph_settings['title']
         else:
-            title_text = f"⚡ {AREA_INFO[code].name}エリア - {ym[:4]}年{ym[4:6]}月"
+            title_text = f"{AREA_INFO[code].name}エリア - {ym[:4]}年{ym[4:6]}月"
             if selected_date and selected_date != "all":
                 date_obj = pd.to_datetime(selected_date)
                 title_text += f" ({date_obj.strftime('%m月%d日')})"
