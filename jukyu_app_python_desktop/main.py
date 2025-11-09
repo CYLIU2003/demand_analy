@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
+    QFormLayout,
     QFrame,
     QGridLayout,
     QGroupBox,
@@ -29,6 +30,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMainWindow,
+    QPlainTextEdit,
     QPushButton,
     QScrollArea,
     QSpinBox,
@@ -39,6 +41,8 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+
+from ml import DemandTransformerForecaster, ForecastResult
 
 # 日本語フォントの設定
 plt.rcParams['font.sans-serif'] = ['MS Gothic', 'Yu Gothic', 'Meiryo', 'DejaVu Sans']
@@ -241,6 +245,14 @@ class MainWindow(QMainWindow):
         self.current_dataframe: Optional[pd.DataFrame] = None
         self.current_time_column: Optional[str] = None
         self.current_dataset_key: Optional[str] = None
+
+        # AI分析関連
+        self.ai_dataframe: Optional[pd.DataFrame] = None
+        self.ai_time_column: Optional[str] = None
+        self.ai_target_series: Optional[pd.Series] = None
+        self.ai_training_index: Optional[pd.Index] = None
+        self.ai_forecaster: Optional[DemandTransformerForecaster] = None
+        self.area_year_months: Dict[AreaCode, List[YearMonth]] = {code: [] for code in AREA_INFO}
         
         self.apply_modern_palette()
 
@@ -280,15 +292,21 @@ class MainWindow(QMainWindow):
         # 詳細ページタブ
         self.detail_page = self.create_detail_page()
         self.tabs.addTab(self.detail_page, "📈 詳細分析")
-        
+
+        # AI分析タブ
+        self.ai_page = self.create_ai_page()
+        self.tabs.addTab(self.ai_page, "🤖 AI分析")
+
         self.setCentralWidget(self.tabs)
 
         # (YYYYMM, area code, path) tuples discovered under data/.
         self.files = scan_files()  # type: List[DataFileEntry]
         self.avail, self.years, self.months = build_availability(self.files)
+        self.refresh_area_year_months()
         self.refresh_heatmap()
         self.area_combo.currentIndexChanged.connect(self.on_area_change)
         self.on_area_change()
+        self.populate_ai_controls()
 
     def create_main_page(self):
         """メインページの作成"""
@@ -407,8 +425,400 @@ class MainWindow(QMainWindow):
         
         content.setSizes([350, 350, 700])
         main_layout.addWidget(content)
-        
+
         return page
+
+    def create_ai_page(self) -> QWidget:
+        """AIモデルを活用した分析タブを構築"""
+
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(15)
+
+        header = QHBoxLayout()
+        title = QLabel("🤖 AI 需給分析ラボ")
+        title.setStyleSheet("font-size: 20px; font-weight: 600; color: #0068B7;")
+        header.addWidget(title)
+        header.addStretch()
+        layout.addLayout(header)
+
+        desc = QLabel(
+            "Transformerベースの需要予測モデルを試すための実験的なラボです。"
+            "選択したCSVから目的の系列を取り出し、学習と予測を実行できます。"
+        )
+        desc.setWordWrap(True)
+        layout.addWidget(desc)
+
+        selection_group = QGroupBox("データセット選択")
+        selection_form = QFormLayout()
+
+        self.ai_area_combo = QComboBox()
+        self.ai_area_combo.setMinimumHeight(32)
+        for code, meta in AREA_INFO.items():
+            self.ai_area_combo.addItem(f"({code}) {meta.name}", code)
+        self.ai_area_combo.currentIndexChanged.connect(self.on_ai_area_change)
+        selection_form.addRow("エリア", self.ai_area_combo)
+
+        self.ai_ym_combo = QComboBox()
+        self.ai_ym_combo.setMinimumHeight(32)
+        self.ai_ym_combo.currentIndexChanged.connect(self.on_ai_ym_change)
+        selection_form.addRow("年月", self.ai_ym_combo)
+
+        self.ai_column_combo = QComboBox()
+        self.ai_column_combo.setMinimumHeight(32)
+        selection_form.addRow("目的系列", self.ai_column_combo)
+
+        selection_group.setLayout(selection_form)
+        layout.addWidget(selection_group)
+
+        params_group = QGroupBox("Transformerハイパーパラメータ")
+        params_form = QFormLayout()
+
+        self.ai_context_spin = QSpinBox()
+        self.ai_context_spin.setRange(12, 5000)
+        self.ai_context_spin.setValue(96)
+        params_form.addRow("コンテキスト長", self.ai_context_spin)
+
+        self.ai_horizon_spin = QSpinBox()
+        self.ai_horizon_spin.setRange(1, 240)
+        self.ai_horizon_spin.setValue(24)
+        params_form.addRow("予測ステップ数", self.ai_horizon_spin)
+
+        self.ai_epoch_spin = QSpinBox()
+        self.ai_epoch_spin.setRange(1, 200)
+        self.ai_epoch_spin.setValue(30)
+        params_form.addRow("エポック", self.ai_epoch_spin)
+
+        self.ai_batch_spin = QSpinBox()
+        self.ai_batch_spin.setRange(4, 512)
+        self.ai_batch_spin.setValue(64)
+        params_form.addRow("バッチサイズ", self.ai_batch_spin)
+
+        self.ai_lr_spin = QDoubleSpinBox()
+        self.ai_lr_spin.setDecimals(5)
+        self.ai_lr_spin.setRange(1e-5, 1e-1)
+        self.ai_lr_spin.setSingleStep(1e-4)
+        self.ai_lr_spin.setValue(5e-4)
+        params_form.addRow("学習率", self.ai_lr_spin)
+
+        params_group.setLayout(params_form)
+        layout.addWidget(params_group)
+
+        btn_row = QHBoxLayout()
+        self.ai_prepare_btn = QPushButton("📚 データ要約")
+        self.ai_prepare_btn.clicked.connect(self.prepare_ai_dataset)
+        btn_row.addWidget(self.ai_prepare_btn)
+
+        self.ai_train_btn = QPushButton("🤖 Transformer学習＆予測")
+        self.ai_train_btn.clicked.connect(self.train_transformer_model)
+        btn_row.addWidget(self.ai_train_btn)
+
+        btn_row.addStretch()
+        layout.addLayout(btn_row)
+
+        self.ai_log_output = QPlainTextEdit()
+        self.ai_log_output.setReadOnly(True)
+        self.ai_log_output.setPlaceholderText("AI分析の進捗がここに表示されます…")
+        layout.addWidget(self.ai_log_output)
+
+        self.ai_result_table = QTableWidget()
+        self.ai_result_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+        self.ai_result_table.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.Stretch)
+        self.ai_result_table.verticalHeader().setVisible(False)
+        self.ai_result_table.setAlternatingRowColors(True)
+        self.ai_result_table.setStyleSheet(
+            """
+            QTableWidget {
+                border: 2px solid #a0d2ff;
+                border-radius: 8px;
+                background-color: #ffffff;
+                alternate-background-color: #f8fafc;
+            }
+            """
+        )
+        layout.addWidget(self.ai_result_table, stretch=1)
+
+        return page
+
+    def refresh_area_year_months(self) -> None:
+        """Recompute available year-month combinations per area."""
+
+        for code in AREA_INFO.keys():
+            self.area_year_months[code] = []
+        for year_month, code, _ in self.files:
+            self.area_year_months.setdefault(code, []).append(year_month)
+        for code, values in self.area_year_months.items():
+            unique_sorted = sorted(set(values))
+            self.area_year_months[code] = unique_sorted
+
+    def populate_ai_controls(self) -> None:
+        """Fill AI tab combos based on scanned files."""
+
+        if not hasattr(self, "ai_area_combo"):
+            return
+        current_code = self.ai_area_combo.currentData()
+        self.ai_area_combo.blockSignals(True)
+        self.ai_area_combo.clear()
+        for code, meta in AREA_INFO.items():
+            self.ai_area_combo.addItem(f"({code}) {meta.name}", code)
+        self.ai_area_combo.blockSignals(False)
+        if current_code:
+            idx = self.ai_area_combo.findData(current_code)
+            if idx >= 0:
+                self.ai_area_combo.setCurrentIndex(idx)
+        self.on_ai_area_change()
+
+    def on_ai_area_change(self) -> None:
+        """Populate the year-month combo when the area changes."""
+
+        if not hasattr(self, "ai_ym_combo"):
+            return
+        code = self.ai_area_combo.currentData()
+        self.ai_ym_combo.blockSignals(True)
+        self.ai_ym_combo.clear()
+        for ym in self.area_year_months.get(code, []):
+            display = f"{ym[:4]}年{ym[4:6]}月"
+            self.ai_ym_combo.addItem(display, ym)
+        self.ai_ym_combo.blockSignals(False)
+        self.ai_dataframe = None
+        self.ai_time_column = None
+        self.ai_target_series = None
+        self.ai_training_index = None
+        self.ai_column_combo.clear()
+        if self.ai_ym_combo.count() > 0:
+            self.ai_ym_combo.setCurrentIndex(0)
+        else:
+            self.append_ai_log("選択したエリアのCSVが見つかりません。data/にファイルを追加してください。")
+
+    def on_ai_ym_change(self) -> None:
+        """Load the selected dataset and populate the column combo."""
+
+        self.load_ai_dataset()
+
+    def load_ai_dataset(self) -> None:
+        code = self.ai_area_combo.currentData()
+        ym = self.ai_ym_combo.currentData()
+        if not code or not ym:
+            return
+        path = DATA_DIR / f"eria_jukyu_{ym}_{code}.csv"
+        if not path.exists():
+            self.append_ai_log(f"CSVが見つかりません: {path.name}")
+            self.ai_dataframe = None
+            self.ai_column_combo.clear()
+            return
+        try:
+            df, time_col = read_csv(path)
+            numeric_columns = [
+                str(col)
+                for col in df.columns
+                if pd.api.types.is_numeric_dtype(df[col])
+            ]
+            self.ai_column_combo.blockSignals(True)
+            self.ai_column_combo.clear()
+            for col in numeric_columns:
+                self.ai_column_combo.addItem(col)
+            self.ai_column_combo.blockSignals(False)
+            self.ai_dataframe = df
+            self.ai_time_column = time_col
+            self.ai_target_series = None
+            self.ai_training_index = None
+            if numeric_columns:
+                self.ai_column_combo.setCurrentIndex(0)
+            self.append_ai_log(
+                f"{path.name} を読み込みました (行数: {len(df):,})."
+            )
+            if not numeric_columns:
+                self.append_ai_log("数値カラムが見つかりませんでした。")
+        except Exception as exc:
+            self.append_ai_log(f"CSV読込に失敗しました: {exc}")
+            self.ai_dataframe = None
+            self.ai_column_combo.clear()
+
+    def append_ai_log(self, message: str) -> None:
+        if not hasattr(self, "ai_log_output") or self.ai_log_output is None:
+            return
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        self.ai_log_output.appendPlainText(f"[{timestamp}] {message}")
+
+    def prepare_ai_dataset(self) -> None:
+        if self.ai_dataframe is None:
+            self.load_ai_dataset()
+        if self.ai_dataframe is None:
+            QtWidgets.QMessageBox.warning(self, "警告", "データが読み込まれていません。")
+            return
+        target_column = self.ai_column_combo.currentText()
+        if not target_column:
+            QtWidgets.QMessageBox.warning(self, "警告", "目的系列を選択してください。")
+            return
+        series = pd.to_numeric(self.ai_dataframe[target_column], errors="coerce")
+        valid = series.dropna()
+        self.ai_target_series = series
+        self.ai_training_index = valid.index
+        self.append_ai_log(
+            f"列 '{target_column}' を読み込みました。利用可能なサンプル: {len(valid):,}件 / 欠損: {series.isna().sum():,}件"
+        )
+        context_len = min(self.ai_context_spin.value(), len(valid))
+        if context_len == 0:
+            self.append_ai_log("十分なデータがありません。CSVを確認してください。")
+            return
+        history_values = valid.iloc[-context_len:]
+        timestamps = None
+        if self.ai_time_column and self.ai_time_column in self.ai_dataframe.columns:
+            try:
+                time_series = pd.to_datetime(
+                    self.ai_dataframe[self.ai_time_column], errors="coerce"
+                )
+                timestamps = time_series.reindex(history_values.index)
+            except Exception:
+                timestamps = None
+        self.display_history_preview(history_values, timestamps)
+
+    def display_history_preview(self, values: pd.Series, timestamps: Optional[pd.Series]) -> None:
+        """Show the latest context window in the result table."""
+
+        self.ai_result_table.clear()
+        self.ai_result_table.setColumnCount(3)
+        self.ai_result_table.setHorizontalHeaderLabels(["種別", "タイムスタンプ", "値"])
+        self.ai_result_table.setRowCount(len(values))
+        for row_idx, (idx, value) in enumerate(values.items()):
+            ts_text = ""
+            if timestamps is not None:
+                try:
+                    ts = timestamps.loc[idx]
+                    if pd.notna(ts):
+                        ts_text = pd.to_datetime(ts).strftime("%Y-%m-%d %H:%M")
+                except Exception:
+                    ts_text = str(idx)
+            else:
+                ts_text = str(idx)
+            self.ai_result_table.setItem(row_idx, 0, QTableWidgetItem("履歴"))
+            self.ai_result_table.setItem(row_idx, 1, QTableWidgetItem(ts_text))
+            self.ai_result_table.setItem(row_idx, 2, QTableWidgetItem(f"{float(value):,.2f}"))
+
+    def train_transformer_model(self) -> None:
+        if self.ai_dataframe is None:
+            self.load_ai_dataset()
+        if self.ai_dataframe is None:
+            QtWidgets.QMessageBox.warning(self, "警告", "データが読み込まれていません。")
+            return
+        target_column = self.ai_column_combo.currentText()
+        if not target_column:
+            QtWidgets.QMessageBox.warning(self, "警告", "目的系列を選択してください。")
+            return
+        if self.ai_target_series is None:
+            self.prepare_ai_dataset()
+        if self.ai_target_series is None:
+            return
+        series = pd.to_numeric(self.ai_target_series, errors="coerce")
+        series_interpolated = (
+            series.interpolate(limit_direction="both")
+            .fillna(method="bfill")
+            .fillna(method="ffill")
+        )
+        context_length = self.ai_context_spin.value()
+        prediction_length = self.ai_horizon_spin.value()
+        if len(series_interpolated.dropna()) < context_length + prediction_length:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "警告",
+                "学習に十分なデータがありません。コンテキスト長や予測ステップ数を調整してください。",
+            )
+            return
+
+        epochs = self.ai_epoch_spin.value()
+        batch_size = self.ai_batch_spin.value()
+        learning_rate = self.ai_lr_spin.value()
+
+        self.append_ai_log(
+            f"Transformerを初期化します (context={context_length}, horizon={prediction_length}, epochs={epochs})."
+        )
+        self.ai_forecaster = DemandTransformerForecaster(
+            context_length=context_length,
+            prediction_length=prediction_length,
+            epochs=epochs,
+            batch_size=batch_size,
+            learning_rate=learning_rate,
+        )
+        try:
+            log = self.ai_forecaster.fit(series_interpolated.to_numpy(), validation_split=0.2)
+        except Exception as exc:
+            self.append_ai_log(f"学習中にエラーが発生しました: {exc}")
+            QtWidgets.QMessageBox.critical(self, "エラー", str(exc))
+            return
+
+        final_train = log.train_loss[-1] if log.train_loss else float("nan")
+        final_val = log.val_loss[-1] if log.val_loss and log.val_loss[-1] is not None else None
+        summary = f"学習完了 - train_loss={final_train:.6f}"
+        if final_val is not None:
+            summary += f", val_loss={final_val:.6f}"
+        self.append_ai_log(summary)
+
+        try:
+            result = self.ai_forecaster.predict(series_interpolated.to_numpy())
+        except Exception as exc:
+            self.append_ai_log(f"予測に失敗しました: {exc}")
+            QtWidgets.QMessageBox.critical(self, "エラー", str(exc))
+            return
+
+        self.display_forecast_result(result, series_interpolated.index)
+
+    def display_forecast_result(self, result: ForecastResult, index: pd.Index) -> None:
+        """Render forecast results in the AI result table."""
+
+        history_len = len(result.history)
+        prediction_len = len(result.prediction)
+        self.ai_result_table.clear()
+        self.ai_result_table.setColumnCount(3)
+        self.ai_result_table.setHorizontalHeaderLabels(["種別", "タイムスタンプ", "値"])
+        self.ai_result_table.setRowCount(history_len + prediction_len)
+
+        history_index = index[-history_len:] if history_len <= len(index) else pd.RangeIndex(history_len)
+        if self.ai_time_column and self.ai_dataframe is not None and self.ai_time_column in self.ai_dataframe.columns:
+            try:
+                time_series = pd.to_datetime(self.ai_dataframe[self.ai_time_column], errors="coerce")
+                history_times = time_series.iloc[-history_len:]
+            except Exception:
+                history_times = pd.Series([None] * history_len)
+        else:
+            history_times = pd.Series([None] * history_len)
+
+        for row, (idx, value) in enumerate(zip(history_index, result.history)):
+            ts_text = ""
+            if history_times[row] is not None and pd.notna(history_times[row]):
+                ts_text = pd.to_datetime(history_times[row]).strftime("%Y-%m-%d %H:%M")
+            else:
+                ts_text = str(idx)
+            self.ai_result_table.setItem(row, 0, QTableWidgetItem("履歴"))
+            self.ai_result_table.setItem(row, 1, QTableWidgetItem(ts_text))
+            self.ai_result_table.setItem(row, 2, QTableWidgetItem(f"{float(value):,.2f}"))
+
+        future_times: List[str] = []
+        if self.ai_time_column and self.ai_dataframe is not None and self.ai_time_column in self.ai_dataframe.columns:
+            try:
+                time_series = pd.to_datetime(self.ai_dataframe[self.ai_time_column], errors="coerce")
+                valid_times = time_series.dropna()
+                if len(valid_times) >= 2:
+                    inferred_freq = valid_times.iloc[-1] - valid_times.iloc[-2]
+                    if inferred_freq == pd.Timedelta(0):
+                        inferred_freq = None
+                else:
+                    inferred_freq = None
+                last_time = valid_times.iloc[-1] if len(valid_times) else None
+                if inferred_freq is not None and last_time is not None:
+                    future_times = [
+                        (last_time + inferred_freq * (i + 1)).strftime("%Y-%m-%d %H:%M")
+                        for i in range(prediction_len)
+                    ]
+            except Exception:
+                future_times = []
+
+        for i, value in enumerate(result.prediction):
+            row = history_len + i
+            ts_text = future_times[i] if i < len(future_times) else f"t+{i + 1}"
+            self.ai_result_table.setItem(row, 0, QTableWidgetItem("予測"))
+            self.ai_result_table.setItem(row, 1, QTableWidgetItem(ts_text))
+            self.ai_result_table.setItem(row, 2, QTableWidgetItem(f"{float(value):,.2f}"))
     
     def create_data_selection_panel(self):
         """データ選択パネル"""
