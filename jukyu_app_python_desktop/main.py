@@ -1053,8 +1053,7 @@ class MainWindow(QMainWindow):
             return
         
         try:
-            # STL分解（季節性の周期を自動検出または24時間と仮定）
-            # 季節性周期は奇数である必要があり、最低7以上推奨
+            # STL分解（季節性の周期を指定）
             period = 24  # 24時間周期
             
             # データが少ない場合は周期を調整
@@ -1068,7 +1067,9 @@ class MainWindow(QMainWindow):
                 return
             
             self.append_ai_log(f"STL分解を実行中（周期: {period}）...")
-            stl = STL(series.values, seasonal=period, robust=True)
+            # periodパラメータで周期を指定、seasonal引数は季節成分のスムージング幅（奇数）
+            seasonal_length = 7  # 季節成分のスムージング幅（最低7、奇数）
+            stl = STL(series.values, period=period, seasonal=seasonal_length, robust=True)
             result = stl.fit()
             
             # プロット
