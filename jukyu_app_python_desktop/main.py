@@ -1313,14 +1313,138 @@ class MainWindow(QMainWindow):
             QtWidgets.QMessageBox.critical(self, "エラー", f"指数平滑法予測に失敗しました:\n{str(e)}")
     
     def run_transformer_forecast(self) -> None:
-        """Transformer予測（既存機能を呼び出し）"""
+        """Transformerモデルで予測"""
         if not TRANSFORMER_AVAILABLE:
-            QtWidgets.QMessageBox.warning(self, "警告", "PyTorchがインストールされていません。")
+            QtWidgets.QMessageBox.warning(self, "警告", "PyTorchがインストールされていません。\n\npip install torch")
+            return
+        
+        try:
+            from sklearn.metrics import mean_absolute_error, mean_squared_error
+        except ImportError as e:
+            self.append_ai_log(f"ライブラリのインポートエラー: {str(e)}")
+            QtWidgets.QMessageBox.critical(self, "エラー", f"scikit-learnが必要です:\n{str(e)}")
             return
         
         self.append_ai_log("=" * 50)
-        self.append_ai_log("Transformer予測は未実装です。従来のTransformer機能を使用してください。")
-        QtWidgets.QMessageBox.information(self, "情報", "Transformer予測機能は開発中です。")
+        self.append_ai_log("Transformer予測を開始します...")
+        
+        series, col_name = self.get_ai_data_series()
+        if series is None:
+            return
+        
+        try:
+            # 訓練/テストデータ分割
+            train_ratio = self.train_ratio_spin.value()
+            train_size = int(len(series) * train_ratio)
+            train, test = series[:train_size], series[train_size:]
+            
+            if len(test) == 0:
+                QtWidgets.QMessageBox.warning(self, "警告", "テストデータがありません。訓練データ比率を下げてください。")
+                return
+            
+            self.append_ai_log(f"訓練データ: {len(train)}サンプル, テストデータ: {len(test)}サンプル")
+            
+            # Transformerモデルのパラメータ
+            prediction_length = min(self.ai_horizon_spin.value(), len(test))
+            context_length = min(48, len(train) // 2)  # 48時間(2日分)をコンテキストとして使用
+            
+            if context_length < 24:
+                QtWidgets.QMessageBox.warning(self, "警告", "訓練データが少なすぎます(最低24時間必要)")
+                return
+            
+            self.append_ai_log(f"コンテキスト長: {context_length}, 予測期間: {prediction_length}")
+            self.append_ai_log("モデルを学習中...")
+            
+            # Transformerモデルの作成と学習
+            forecaster = DemandTransformerForecaster(
+                context_length=context_length,
+                prediction_length=prediction_length,
+                d_model=128,
+                nhead=4,
+                num_layers=2,
+                dropout=0.1,
+                feedforward_dim=256,
+                learning_rate=5e-4,
+                batch_size=32,
+                epochs=30,  # エポック数
+            )
+            
+            # 学習
+            training_log = forecaster.fit(train.values, validation_split=0.2, verbose=False)
+            
+            # 予測
+            result = forecaster.predict(train.values)
+            forecast = result.prediction[:prediction_length]
+            
+            # 評価指標
+            actual = test[:prediction_length]
+            mae = mean_absolute_error(actual, forecast)
+            rmse = np.sqrt(mean_squared_error(actual, forecast))
+            mape = np.mean(np.abs((actual - forecast) / actual)) * 100
+            
+            # プロット
+            self.ai_result_canvas.fig.clear()
+            ax = self.ai_result_canvas.fig.add_subplot(1, 1, 1)
+            
+            # 訓練データ
+            ax.plot(range(len(train)), train.values, label='訓練データ', color='#0068B7', linewidth=1.5, alpha=0.8)
+            
+            # テストデータ
+            test_idx = range(len(train), len(train) + len(actual))
+            ax.plot(test_idx, actual.values, label='実測値', color='#10b981', linewidth=1.5)
+            
+            # 予測値
+            ax.plot(test_idx, forecast, label='Transformer予測', color='#ef4444', linewidth=2, linestyle='--')
+            
+            ax.set_xlabel('時刻インデックス', fontsize=11)
+            ax.set_ylabel(col_name, fontsize=11)
+            ax.set_title(f'Transformer予測結果', fontsize=14, fontweight='bold', color='#0068B7')
+            ax.legend(loc='best', fontsize=10)
+            ax.grid(True, alpha=0.3)
+            
+            self.ai_result_canvas.fig.tight_layout()
+            self.ai_result_canvas.draw()
+            
+            # 学習曲線のプロット
+            self.plot_training_curves(training_log)
+            
+            # 最終検証損失の文字列を作成
+            val_loss_str = f"{training_log.val_loss[-1]:.6f}" if training_log.val_loss[-1] is not None else "N/A"
+            
+            # 評価結果
+            self.ai_eval_widget.setPlainText(
+                f"Transformer予測モデル評価\n{'='*60}\n\n"
+                f"モデル: Transformer Encoder\n"
+                f"訓練サンプル数: {len(train)}\n"
+                f"コンテキスト長: {context_length}時間\n"
+                f"予測期間: {prediction_length}ステップ\n"
+                f"エポック数: 30\n\n"
+                f"モデルアーキテクチャ:\n"
+                f"  d_model: 128\n"
+                f"  num_heads: 4\n"
+                f"  num_layers: 2\n"
+                f"  feedforward_dim: 256\n"
+                f"  dropout: 0.1\n\n"
+                f"評価指標:\n"
+                f"  MAE  (平均絶対誤差):     {mae:.4f}\n"
+                f"  RMSE (二乗平均平方根誤差): {rmse:.4f}\n"
+                f"  MAPE (平均絶対パーセント誤差): {mape:.2f}%\n\n"
+                f"最終学習損失: {training_log.train_loss[-1]:.6f}\n"
+                f"最終検証損失: {val_loss_str}\n"
+            )
+            
+            # 残差分析
+            residuals = actual.values - forecast
+            self.plot_residual_analysis(pd.Series(residuals))
+            
+            self.append_ai_log(f"Transformer予測完了 - MAE: {mae:.2f}, RMSE: {rmse:.2f}, MAPE: {mape:.2f}%")
+            self.ai_tabs.setCurrentIndex(1)
+            
+        except Exception as e:
+            import traceback
+            self.append_ai_log(f"エラー: {str(e)}")
+            self.append_ai_log(traceback.format_exc())
+            QtWidgets.QMessageBox.critical(self, "エラー", f"Transformer予測に失敗しました:\n{str(e)}")
     
     def plot_residual_analysis(self, residuals) -> None:
         """残差分析プロット"""
@@ -1360,6 +1484,19 @@ class MainWindow(QMainWindow):
         
         self.ai_residual_canvas.fig.tight_layout()
         self.ai_residual_canvas.draw()
+
+    def plot_training_curves(self, training_log) -> None:
+        """学習曲線をプロット（Transformer用）- 残差分析キャンバスの4番目のサブプロットに追加"""
+        # 残差分析の4番目のプロット（ACF）を学習曲線に置き換える
+        # または、既存のプロットはそのままにして情報だけログに出力
+        epochs = range(1, len(training_log.train_loss) + 1)
+        
+        # ログに学習の進捗を出力
+        self.append_ai_log("学習曲線:")
+        for i, (train_loss, val_loss) in enumerate(zip(training_log.train_loss, training_log.val_loss), 1):
+            if i % 5 == 0 or i == len(training_log.train_loss):  # 5エポックごとに表示
+                val_str = f", Val: {val_loss:.6f}" if val_loss is not None else ""
+                self.append_ai_log(f"  Epoch {i:2d}: Train: {train_loss:.6f}{val_str}")
 
     def prepare_ai_dataset(self) -> None:
         if self.ai_dataframe is None:

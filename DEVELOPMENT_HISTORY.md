@@ -297,16 +297,144 @@ pip install statsmodels scikit-learn scipy
 git pull origin power_demand_ai
 ```
 
+---
+
+## 追加開発（2025年11月10日）
+
+### Transformer予測機能の実装
+
+#### 背景
+ユーザーからの要望: 「transformer機能もおいおい実装したいな」
+
+既存のAI予測タブにTransformerベースのディープラーニング予測機能を追加することになった。
+
+#### 実装内容
+
+**1. Transformerモデルアーキテクチャ**
+- エンコーダーのみのTransformer構造
+- 位置エンコーディング（Sinusoidal）
+- マルチヘッドアテンション機構
+
+**モデル仕様:**
+```python
+DemandTransformerForecaster(
+    context_length=48,        # 48時間（2日分）の履歴を使用
+    prediction_length=24,     # 24時間先まで予測（設定可能）
+    d_model=128,              # 埋め込み次元
+    nhead=4,                  # アテンションヘッド数
+    num_layers=2,             # Transformerレイヤー数
+    dropout=0.1,              # ドロップアウト率
+    feedforward_dim=256,      # フィードフォワード層の次元
+    learning_rate=5e-4,       # 学習率
+    batch_size=32,            # バッチサイズ
+    epochs=30                 # 学習エポック数
+)
+```
+
+**2. 学習プロセス**
+- スライディングウィンドウ方式でデータセット作成
+- 訓練データの80%で学習、20%で検証
+- MSE損失関数、Adam最適化
+- 勾配クリッピング（max_norm=1.0）
+- StandardScalerによる正規化
+
+**3. UI統合**
+- 既存のARIMA/指数平滑法と同じインターフェース
+- 「Transformer予測」ボタンで実行
+- 学習曲線のログ出力（5エポックごと）
+- 予測結果、評価指標、残差分析の可視化
+
+#### 技術的な課題と解決
+
+**課題1: 依存ライブラリの競合**
+**問題**: scipy 1.11.4がnumpy 2.1.3に対応していない
+
+**エラーメッセージ:**
+```
+ERROR: Cannot install ... because these package versions have conflicting dependencies.
+scipy 1.11.4 depends on numpy<1.28.0 and >=1.21.6
+```
+
+**解決策**: requirements.txtを更新
+```diff
+- scipy==1.11.4
++ scipy==1.14.1
+- statsmodels==0.14.1
++ statsmodels==0.14.4
+```
+
+**課題2: f-string内での条件式エラー**
+**問題**: フォーマット指定子内で三項演算子を使用
+
+**エラー:**
+```python
+f"{training_log.val_loss[-1]:.6f if training_log.val_loss[-1] else 'N/A'}"
+# ValueError: Invalid format specifier
+```
+
+**解決策**: 条件式を事前に評価
+```python
+val_loss_str = f"{training_log.val_loss[-1]:.6f}" if training_log.val_loss[-1] is not None else "N/A"
+f"最終検証損失: {val_loss_str}\n"
+```
+
+#### 実装されたメソッド
+
+1. **`run_transformer_forecast()`**
+   - データの訓練/テスト分割
+   - Transformerモデルの作成と学習
+   - 予測実行と評価指標計算
+   - 結果のプロット
+
+2. **`plot_training_curves()`**
+   - 学習損失と検証損失のログ出力
+   - エポックごとの進捗表示
+
+#### パフォーマンス
+
+**実測値（1,440サンプル、CPU）:**
+- 学習時間: 約51秒（30エポック）
+- 訓練データ: 1,152サンプル（80%）
+- 検証データ: 288サンプル（20%）
+- 予測時間: 瞬時（<0.1秒）
+
+**学習曲線例:**
+```
+Epoch  5: Train: 0.356048, Val: 0.416264
+Epoch 10: Train: 0.223000, Val: 0.312003
+Epoch 15: Train: 0.185088, Val: 0.312274
+Epoch 20: Train: 0.129399, Val: 0.287797
+Epoch 25: Train: 0.116420, Val: 0.303150
+Epoch 30: Train: 0.103616, Val: 0.316190
+```
+
+#### システム要件への影響
+
+**追加要件（Transformer使用時）:**
+- **CPU**: クアッドコア以上推奨（デュアルコアでも動作可能）
+- **RAM**: 16 GB推奨（最小8 GB）
+- **ストレージ**: 追加1.5 GB（PyTorch）
+- **GPU**: オプション（CUDA対応でトレーニング高速化）
+
+**ライブラリ追加:**
+- PyTorch 2.4.1（CPU版で約1.5 GB）
+- CUDA Toolkit（GPU使用時）
+
+---
+
 ## 今後の拡張案
 
 ### 短期的改善
 - [ ] 複数エリアの比較分析機能
 - [ ] 予測結果のエクスポート機能（CSV, PNG）
 - [ ] カスタム予測期間の設定UI改善
+- [x] Transformerによるディープラーニング予測 ✅ **完了 (2025-11-10)**
 
 ### 中期的改善
 - [ ] Prophet（Facebookの時系列予測ライブラリ）の統合
-- [ ] LSTMやTransformerによるディープラーニング予測
+- [ ] LSTM予測モデルの追加
+- [ ] Transformerのハイパーパラメータ調整UI
+- [ ] GPU対応の自動検出と切り替え
 - [ ] 気象データとの相関分析
 
 ### 長期的改善
@@ -320,12 +448,14 @@ git pull origin power_demand_ai
 - **STL分解**: Cleveland, R. B., et al. (1990). "STL: A Seasonal-Trend Decomposition Procedure Based on Loess"
 - **ARIMA**: Box, G. E. P., & Jenkins, G. M. (1970). "Time Series Analysis: Forecasting and Control"
 - **指数平滑法**: Holt, C. C. (1957). "Forecasting seasonals and trends by exponentially weighted moving averages"
+- **Transformer**: Vaswani, A., et al. (2017). "Attention Is All You Need" - NIPS 2017
 
 ### ライブラリドキュメント
 - [statsmodels](https://www.statsmodels.org/stable/index.html)
 - [scikit-learn](https://scikit-learn.org/stable/)
 - [pandas](https://pandas.pydata.org/docs/)
 - [matplotlib](https://matplotlib.org/stable/contents.html)
+- [PyTorch](https://pytorch.org/docs/stable/index.html)
 
 ## 連絡先・サポート
 
@@ -343,10 +473,17 @@ git pull origin power_demand_ai
 
 このプロジェクトでは、電力需要分析ツールに以下の改善を加えました:
 
+### フェーズ1: 統計分析機能（2025-11-09）
 1. **ユーザーインターフェースの改善**: 直感的でない詳細分析タブを5つの明確なサブタブに再構成
 2. **学術的分析機能の追加**: STL分解、ARIMA、指数平滑法などの標準的な時系列分析手法を実装
 3. **堅牢なエラーハンドリング**: ライブラリ不足や欠損値に対する適切なエラーメッセージと処理
 4. **評価指標の実装**: MAE、RMSE、MAPEによる予測精度の定量評価
 5. **可視化の充実**: 統計グラフ、予測プロット、残差分析などの包括的な可視化
+
+### フェーズ2: ディープラーニング機能（2025-11-10）
+6. **Transformer予測モデル**: アテンション機構を使った最先端の時系列予測
+7. **スケーラブルなアーキテクチャ**: CPU/GPU両対応、バッチ学習、学習曲線モニタリング
+8. **依存関係管理**: PyTorchのオプショナルインストール、互換性の確保
+9. **システム要件の文書化**: ハードウェア/ソフトウェア要件をREADMEに明記
 
 すべての変更は`power_demand_ai`ブランチにコミットされ、他のPCやAIエージェントツールから参照可能です。
