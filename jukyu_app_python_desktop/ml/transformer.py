@@ -201,6 +201,7 @@ class DemandTransformerForecaster:
         series: Sequence[float],
         validation_split: float = 0.2,
         verbose: bool = False,
+        callback=None,
     ) -> ForecastTrainingLog:
         series = np.asarray(series, dtype=np.float32)
         if np.isnan(series).any():
@@ -258,6 +259,9 @@ class DemandTransformerForecaster:
                 if val_loss_value is not None:
                     msg += f", val_loss={val_loss_value:.6f}"
                 print(msg)
+            
+            if callback:
+                callback(epoch + 1, self.epochs, epoch_train_loss, val_loss_value)
 
         log = ForecastTrainingLog(train_loss=train_losses, val_loss=val_losses)
         self._last_training_log = log
