@@ -83,9 +83,45 @@ The PySide6 application now includes advanced **statistical analysis** and **AI-
 - **ARIMA Forecasting**: Statistical time series prediction with model evaluation
 - **Exponential Smoothing**: Holt-Winters method for short-term forecasting
 - **Transformer Forecasting**: Deep learning-based predictions using attention mechanisms (requires PyTorch)
+- **Weather Correlation Analysis**: Analyze relationships between weather conditions and power generation
+- **Weather-Aware Forecasting (ARIMAX)**: Demand prediction using weather data as exogenous variables
 - **Model Evaluation**: MAE, RMSE, MAPE metrics with residual analysis
 
 For detailed documentation, see [FEATURES.md](FEATURES.md).
+
+### 🌤️ Weather Data Integration (v2.1)
+
+The application now supports integration with Japanese Meteorological Agency data:
+
+**Supported Weather Variables:**
+- Temperature (℃)
+- Precipitation (mm)
+- Sunshine duration (hours)
+- Wind speed & direction (m/s)
+- Solar radiation (MJ/m²)
+
+**Weather Data Format:**
+Place weather CSV files in `data/weather/` folder with naming pattern:
+```
+{city}_{YYYYMMDD}_{YYYYMMDD}.csv
+```
+
+**Example:**
+```
+tokyo_20250101_20250331.csv   # Tokyo area, Jan-Mar 2025
+osaka_20250401_20250630.csv   # Osaka area, Apr-Jun 2025
+```
+
+**Area-City Mapping:**
+| Area Code | Power Company | Weather Station |
+|-----------|---------------|-----------------|
+| 03 | Tokyo | tokyo |
+| 04 | Chubu | nagoya |
+| 06 | Kansai | osaka |
+
+**Analysis Capabilities:**
+- **Correlation Analysis**: Scatter plots showing relationships between weather and power generation
+- **Weather-Aware Prediction**: ARIMAX models that use temperature, solar radiation, and wind data to improve forecast accuracy
 
 ### Performance Notes
 

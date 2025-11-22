@@ -15,6 +15,7 @@ import matplotlib.ticker as ticker
 import numpy as np
 import pandas as pd
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
+from matplotlib.backends.backend_qtagg import NavigationToolbar2QT as NavigationToolbar
 from matplotlib.figure import Figure
 from PySide6 import QtCore, QtGui, QtWidgets
 from PySide6.QtCore import Qt
@@ -77,8 +78,24 @@ AREA_INFO: Dict[AreaCode, AreaInfo] = {
     "10": AreaInfo("沖縄", "https://www.okiden.co.jp/business-support/service/supply-and-demand/"),
 }
 
+# エリアコードと気象庁観測地点（代表都市）の対応
+# ファイル名マッチングに使用: {city_name}_YYYYMMDD_YYYYMMDD.csv
+AREA_WEATHER_MAP: Dict[AreaCode, str] = {
+    "01": "sapporo",   # 北海道
+    "02": "sendai",    # 東北
+    "03": "tokyo",     # 東京
+    "04": "nagoya",    # 中部
+    "05": "toyama",    # 北陸
+    "06": "osaka",     # 関西
+    "07": "hiroshima", # 中国
+    "08": "takamatsu", # 四国
+    "09": "fukuoka",   # 九州
+    "10": "naha",      # 沖縄
+}
+
 FNAME = re.compile(r"^eria_jukyu_(\d{6})_(\d{2})\.csv$")
 DATA_DIR = Path(__file__).resolve().parent / "data"
+WEATHER_DIR = DATA_DIR / "weather"
 
 
 @dataclass
@@ -220,6 +237,181 @@ def read_csv(path: Path) -> Tuple[pd.DataFrame, Optional[str]]:
 
     return df, detected_time_column
 
+
+def read_weather_csv(path: Path) -> pd.DataFrame:
+    """
+    気象庁の時別値CSVを読み込んで整形する
+    
+    フォーマット例:
+    - 行1: ダウンロード時刻
+    - 行2: 地名ヘッダー（東京,東京,...）
+    - 行3: カラム名（年月日時,気温(℃),気温(℃),...）
+    - 行4: サブヘッダー（品質情報,均質番号,...）
+    - 行5以降: データ本体
+    """
+    try:
+        # Shift_JISで読み込み、最初の4行をスキップ
+        df = pd.read_csv(path, encoding="shift_jis", skiprows=4, engine="python")
+        
+        # 最初の列が日時
+        datetime_col = df.columns[0]
+        df = df.rename(columns={datetime_col: "datetime"})
+        
+        # datetimeに変換
+        df["datetime"] = pd.to_datetime(df["datetime"], errors="coerce")
+        
+        # 必要な列を抽出（各項目の最初の値のみ取得）
+        # カラム構成: 年月日時, 気温, 品質, 均質, 降水量, 品質, 均質, ...
+        weather_data = pd.DataFrame()
+        weather_data["datetime"] = df["datetime"]
+        
+        # 気温 (2列目)
+        if len(df.columns) > 1:
+            weather_data["temperature"] = pd.to_numeric(df.iloc[:, 1], errors="coerce")
+        
+        # 降水量 (5列目)
+        if len(df.columns) > 4:
+            weather_data["precipitation"] = pd.to_numeric(df.iloc[:, 4], errors="coerce")
+        
+        # 日照時間 (8列目)
+        if len(df.columns) > 7:
+            weather_data["sunlight"] = pd.to_numeric(df.iloc[:, 8], errors="coerce")
+        
+        # 風速 (12列目)
+        if len(df.columns) > 11:
+            weather_data["wind_speed"] = pd.to_numeric(df.iloc[:, 12], errors="coerce")
+        
+        # 風向 (14列目) - 文字列
+        if len(df.columns) > 13:
+            weather_data["wind_direction"] = df.iloc[:, 14]
+        
+        # 日射量 (17列目)
+        if len(df.columns) > 16:
+            weather_data["solar_radiation"] = pd.to_numeric(df.iloc[:, 17], errors="coerce")
+        
+        # NaNを含む行を削除
+        weather_data = weather_data.dropna(subset=["datetime"])
+        
+        return weather_data
+        
+    except Exception as e:
+        raise ValueError(f"天候データの読み込みに失敗しました: {path}\n{str(e)}")
+
+
+def find_weather_file(area_code: AreaCode, year_month: YearMonth) -> Optional[Path]:
+    """
+    指定されたエリアと年月に対応する天候CSVファイルを検索
+    
+    対応するファイル名形式:
+    1. 月別ファイル: {city}_YYYYMM.csv (例: tokyo_202501.csv)
+    2. 期間ファイル: {city}_YYYYMMDD_YYYYMMDD.csv (例: tokyo_20250101_20250331.csv)
+    """
+    if not WEATHER_DIR.exists():
+        print(f"[DEBUG] 天候データディレクトリが存在しません: {WEATHER_DIR}")
+        return None
+    
+    city_name = AREA_WEATHER_MAP.get(area_code)
+    if not city_name:
+        print(f"[DEBUG] エリアコード {area_code} に対応する都市名が見つかりません")
+        return None
+    
+    print(f"[DEBUG] エリア {area_code} → 都市: {city_name}, 対象年月: {year_month}")
+    
+    year = int(year_month[:4])
+    month = int(year_month[4:6])
+    
+    # 該当する期間を含むファイルを探す
+    available_files = list(WEATHER_DIR.glob(f"{city_name}_*.csv"))
+    print(f"[DEBUG] 検索パターン: {city_name}_*.csv")
+    print(f"[DEBUG] 見つかったファイル: {[f.name for f in available_files]}")
+    
+    for weather_file in available_files:
+        try:
+            filename = weather_file.stem
+            parts = filename.split("_")
+            print(f"[DEBUG] ファイル解析: {filename} → parts={parts}")
+            
+            # パターン1: 月別ファイル (city_YYYYMM.csv)
+            if len(parts) == 2 and len(parts[1]) == 6:
+                file_year_month = parts[1]  # YYYYMM
+                if file_year_month == year_month:
+                    print(f"[DEBUG] 月別ファイルがマッチしました: {weather_file.name}")
+                    return weather_file
+            
+            # パターン2: 期間ファイル (city_YYYYMMDD_YYYYMMDD.csv)
+            elif len(parts) >= 3:
+                start_date_str = parts[1]  # YYYYMMDD
+                end_date_str = parts[2]    # YYYYMMDD
+                
+                # 日付形式チェック（8桁）
+                if len(start_date_str) == 8 and len(end_date_str) == 8:
+                    start_year = int(start_date_str[:4])
+                    start_month = int(start_date_str[4:6])
+                    end_year = int(end_date_str[:4])
+                    end_month = int(end_date_str[4:6])
+                    
+                    print(f"[DEBUG] 期間: {start_year}/{start_month:02d} ～ {end_year}/{end_month:02d}, 対象: {year}/{month:02d}")
+                    
+                    # 指定された年月がファイルの期間内か確認
+                    if (start_year < year or (start_year == year and start_month <= month)) and \
+                       (end_year > year or (end_year == year and end_month >= month)):
+                        print(f"[DEBUG] 期間ファイルがマッチしました: {weather_file.name}")
+                        return weather_file
+        except (ValueError, IndexError) as e:
+            print(f"[DEBUG] ファイル解析エラー: {filename} - {e}")
+            continue
+    
+    print(f"[DEBUG] 該当する天候ファイルが見つかりませんでした")
+    return None
+
+
+def merge_weather_data(df_power: pd.DataFrame, area_code: AreaCode, year_month: YearMonth, 
+                       time_column: Optional[str] = None) -> Tuple[pd.DataFrame, bool]:
+    """
+    電力データに天候データを結合する
+    
+    Returns:
+        (merged_df, has_weather): 結合後のDataFrameと天候データが存在したかのフラグ
+    """
+    # 天候ファイルを検索
+    weather_file = find_weather_file(area_code, year_month)
+    
+    if not weather_file:
+        return df_power, False
+    
+    try:
+        # 天候データを読み込み
+        df_weather = read_weather_csv(weather_file)
+        
+        # 電力データに日時列がない場合はそのまま返す
+        if time_column is None or time_column not in df_power.columns:
+            return df_power, False
+        
+        # 電力データの時刻列をdatetimeに変換（まだの場合）
+        if not pd.api.types.is_datetime64_any_dtype(df_power[time_column]):
+            df_power[time_column] = pd.to_datetime(df_power[time_column], errors="coerce")
+        
+        # 日時をキーにして左外部結合
+        df_merged = pd.merge(
+            df_power, 
+            df_weather, 
+            left_on=time_column, 
+            right_on="datetime", 
+            how="left",
+            suffixes=("", "_weather")
+        )
+        
+        # 重複した"datetime"列を削除
+        if "datetime_weather" in df_merged.columns:
+            df_merged = df_merged.drop(columns=["datetime_weather"])
+        
+        return df_merged, True
+        
+    except Exception as e:
+        print(f"天候データの結合に失敗: {str(e)}")
+        return df_power, False
+
+
 class MplCanvas(FigureCanvas):
     # Thin matplotlib canvas wrapper that exposes the Axes for plotting.
 
@@ -274,9 +466,22 @@ class GraphCard(QFrame):
 
         header = QHBoxLayout()
         header.setSpacing(10)
-        self.title_label = QLabel("保存済みグラフ")
-        self.title_label.setStyleSheet("font-weight: 600; color: #0068B7; font-size: 15px;")
-        header.addWidget(self.title_label)
+        
+        # 重ね合わせ用チェックボックスを追加
+        self.overlay_checkbox = QCheckBox("重ね合わせに含める")
+        self.overlay_checkbox.setStyleSheet("""
+            QCheckBox {
+                font-weight: 600;
+                color: #0068B7;
+                font-size: 14px;
+            }
+            QCheckBox::indicator {
+                width: 20px;
+                height: 20px;
+            }
+        """)
+        header.addWidget(self.overlay_checkbox)
+        
         header.addStretch()
         self.tag_label = QLabel("")
         self.tag_label.setStyleSheet("color: #4a5568;")
@@ -371,6 +576,7 @@ class MainWindow(QMainWindow):
             "figsize_w": 12,
             "figsize_h": 6,
             "dpi": 100,
+            "detailed_ticks": False,
         }
         
         # グラフコレクション
@@ -458,13 +664,39 @@ class MainWindow(QMainWindow):
         settings_panel = self.create_graph_settings_panel()
         settings_panel.setMaximumWidth(350)
         
-        # 右パネル: グラフ表示とコレクション
-        display_panel = self.create_graph_display_panel()
+        # 右パネル: タブでプレビュー、グラフ、コレクションを分離
+        right_tabs = QTabWidget()
+        right_tabs.setStyleSheet(
+            "QTabBar::tab {\n"
+            "    background: #f0f9ff;\n"
+            "    color: #0068B7;\n"
+            "    border: 1px solid #bfdbfe;\n"
+            "    padding: 8px 16px;\n"
+            "    border-top-left-radius: 6px;\n"
+            "    border-top-right-radius: 6px;\n"
+            "}\n"
+            "QTabBar::tab:selected {\n"
+            "    background: #0068B7;\n"
+            "    color: white;\n"
+            "}\n"
+        )
+        
+        # プレビュータブ
+        preview_panel = self.create_preview_panel()
+        right_tabs.addTab(preview_panel, "📋 データプレビュー")
+        
+        # グラフ表示タブ
+        graph_panel = self.create_graph_only_panel()
+        right_tabs.addTab(graph_panel, "📊 グラフ表示")
+        
+        # 並列比較用コレクションタブ
+        collection_panel = self.create_collection_panel()
+        right_tabs.addTab(collection_panel, "🗂 並列比較")
         
         splitter = QSplitter(Qt.Horizontal)
         splitter.addWidget(data_panel)
         splitter.addWidget(settings_panel)
-        splitter.addWidget(display_panel)
+        splitter.addWidget(right_tabs)
         splitter.setSizes([400, 350, 1050])
         
         layout.addWidget(splitter)
@@ -482,6 +714,26 @@ class MainWindow(QMainWindow):
                 self.area_combo.setCurrentIndex(0)
                 self.on_area_change()
         
+        # 年・月の分離版コンボボックスを更新
+        if hasattr(self, "year_combo") and hasattr(self, "month_combo"):
+            code = self.area_combo.currentData() if hasattr(self, "area_combo") else None
+            if code:
+                year_months = self.area_year_months.get(code, [])
+                
+                # 年のリストを取得（重複を除く）
+                years = sorted(set([ym[:4] for ym in year_months]))
+                
+                self.year_combo.blockSignals(True)
+                self.year_combo.clear()
+                for year in years:
+                    self.year_combo.addItem(f"{year}年", year)
+                self.year_combo.blockSignals(False)
+                
+                if self.year_combo.count() > 0:
+                    self.year_combo.setCurrentIndex(0)
+                    self.update_month_combo()
+        
+        # 後方互換性のため、ym_comboも更新（非表示だが使用される場合がある）
         if hasattr(self, "ym_combo"):
             code = self.area_combo.currentData() if hasattr(self, "area_combo") else None
             self.ym_combo.blockSignals(True)
@@ -493,7 +745,6 @@ class MainWindow(QMainWindow):
             self.ym_combo.blockSignals(False)
             if self.ym_combo.count() > 0:
                 self.ym_combo.setCurrentIndex(0)
-                self.on_ym_change()
 
     def create_ai_page(self) -> QWidget:
         """統計分析・予測タブを作成"""
@@ -529,11 +780,23 @@ class MainWindow(QMainWindow):
         self.ai_area_combo.currentIndexChanged.connect(self.on_ai_area_change)
         control_layout.addWidget(self.ai_area_combo)
 
-        control_layout.addWidget(QLabel("年月"))
+        # 年選択
+        control_layout.addWidget(QLabel("年:"))
+        self.ai_year_combo = QComboBox()
+        self.ai_year_combo.setMinimumHeight(32)
+        self.ai_year_combo.currentIndexChanged.connect(self.on_ai_year_month_change)
+        control_layout.addWidget(self.ai_year_combo)
+        
+        # 月選択
+        control_layout.addWidget(QLabel("月:"))
+        self.ai_month_combo = QComboBox()
+        self.ai_month_combo.setMinimumHeight(32)
+        self.ai_month_combo.currentIndexChanged.connect(self.on_ai_year_month_change)
+        control_layout.addWidget(self.ai_month_combo)
+        
+        # 後方互換性のため、ai_ym_comboも保持（非表示）
         self.ai_ym_combo = QComboBox()
-        self.ai_ym_combo.setMinimumHeight(32)
-        self.ai_ym_combo.currentIndexChanged.connect(self.on_ai_ym_change)
-        control_layout.addWidget(self.ai_ym_combo)
+        self.ai_ym_combo.setVisible(False)
 
         control_layout.addWidget(QLabel("目的変数"))
         self.ai_column_combo = QComboBox()
@@ -567,6 +830,17 @@ class MainWindow(QMainWindow):
             self.transformer_btn.setMinimumHeight(40)
             self.transformer_btn.clicked.connect(self.run_transformer_forecast)
             method_layout.addWidget(self.transformer_btn)
+        
+        self.weather_btn = QPushButton("🌤️ 天候分析")
+        self.weather_btn.setMinimumHeight(40)
+        self.weather_btn.clicked.connect(self.run_weather_analysis)
+        method_layout.addWidget(self.weather_btn)
+        
+        self.weather_forecast_btn = QPushButton("🌡️ 天候予測")
+        self.weather_forecast_btn.setMinimumHeight(40)
+        self.weather_forecast_btn.setToolTip("天候データを考慮した需要予測 (ARIMAX)")
+        self.weather_forecast_btn.clicked.connect(self.run_weather_forecast)
+        method_layout.addWidget(self.weather_forecast_btn)
         
         method_layout.addStretch()
         layout.addLayout(method_layout)
@@ -629,6 +903,10 @@ class MainWindow(QMainWindow):
         # 残差分析タブ
         self.ai_residual_canvas = MplCanvas(width=12, height=6)
         self.ai_tabs.addTab(self.ai_residual_canvas, "残差分析")
+        
+        # 天候分析タブ
+        self.ai_weather_canvas = MplCanvas(width=12, height=6)
+        self.ai_tabs.addTab(self.ai_weather_canvas, "天候分析")
         
         layout.addWidget(self.ai_tabs)
         
@@ -1060,24 +1338,95 @@ class MainWindow(QMainWindow):
     def on_ai_area_change(self) -> None:
         # Populate the year-month combo when the area changes.
 
-        if not hasattr(self, "ai_ym_combo"):
-            return
         code = self.ai_area_combo.currentData()
-        self.ai_ym_combo.blockSignals(True)
-        self.ai_ym_combo.clear()
-        for ym in self.area_year_months.get(code, []):
-            display = f"{ym[:4]}年{ym[4:6]}月"
-            self.ai_ym_combo.addItem(display, ym)
-        self.ai_ym_combo.blockSignals(False)
+        
+        # 年・月の分離版コンボボックスを更新
+        if hasattr(self, "ai_year_combo") and hasattr(self, "ai_month_combo"):
+            year_months = self.area_year_months.get(code, [])
+            
+            # 年のリストを取得（重複を除く）
+            years = sorted(set([ym[:4] for ym in year_months]))
+            
+            self.ai_year_combo.blockSignals(True)
+            self.ai_year_combo.clear()
+            for year in years:
+                self.ai_year_combo.addItem(f"{year}年", year)
+            self.ai_year_combo.blockSignals(False)
+            
+            if self.ai_year_combo.count() > 0:
+                self.ai_year_combo.setCurrentIndex(0)
+                self.update_ai_month_combo()
+        
+        # 後方互換性のため、ai_ym_comboも更新
+        if hasattr(self, "ai_ym_combo"):
+            self.ai_ym_combo.blockSignals(True)
+            self.ai_ym_combo.clear()
+            for ym in self.area_year_months.get(code, []):
+                display = f"{ym[:4]}年{ym[4:6]}月"
+                self.ai_ym_combo.addItem(display, ym)
+            self.ai_ym_combo.blockSignals(False)
+            if self.ai_ym_combo.count() > 0:
+                self.ai_ym_combo.setCurrentIndex(0)
+        
         self.ai_dataframe = None
         self.ai_time_column = None
         self.ai_target_series = None
         self.ai_training_index = None
         self.ai_column_combo.clear()
-        if self.ai_ym_combo.count() > 0:
-            self.ai_ym_combo.setCurrentIndex(0)
-        else:
+        
+        if (hasattr(self, "ai_year_combo") and self.ai_year_combo.count() == 0):
             self.append_ai_log("選択したエリアのCSVが見つかりません。data/にファイルを追加してください。")
+
+    def update_ai_month_combo(self):
+        """AI分析タブ: 選択された年に対応する月のリストを更新"""
+        if not hasattr(self, "ai_year_combo") or not hasattr(self, "ai_month_combo"):
+            return
+        
+        code = self.ai_area_combo.currentData()
+        year = self.ai_year_combo.currentData()
+        
+        if not code or not year:
+            return
+        
+        # 選択された年に対応する月を取得
+        year_months = self.area_year_months.get(code, [])
+        months = sorted([ym[4:6] for ym in year_months if ym.startswith(year)])
+        
+        self.ai_month_combo.blockSignals(True)
+        self.ai_month_combo.clear()
+        for month in months:
+            self.ai_month_combo.addItem(f"{int(month)}月", month)
+        self.ai_month_combo.blockSignals(False)
+        
+        if self.ai_month_combo.count() > 0:
+            self.ai_month_combo.setCurrentIndex(0)
+            self.on_ai_year_month_change()
+
+    def on_ai_year_month_change(self):
+        """AI分析タブ: 年または月が変更された時の処理"""
+        if not hasattr(self, "ai_year_combo") or not hasattr(self, "ai_month_combo"):
+            return
+        
+        year = self.ai_year_combo.currentData()
+        month = self.ai_month_combo.currentData()
+        
+        if not year or not month:
+            return
+        
+        # 年月を結合してYYYYMM形式にする
+        ym = f"{year}{month}"
+        
+        # ai_ym_comboも更新（後方互換性）
+        if hasattr(self, "ai_ym_combo"):
+            for i in range(self.ai_ym_combo.count()):
+                if self.ai_ym_combo.itemData(i) == ym:
+                    self.ai_ym_combo.blockSignals(True)
+                    self.ai_ym_combo.setCurrentIndex(i)
+                    self.ai_ym_combo.blockSignals(False)
+                    break
+        
+        # 既存のon_ai_ym_change処理を実行
+        self.on_ai_ym_change()
 
     def on_ai_ym_change(self) -> None:
         # Load the selected dataset and populate the column combo.
@@ -1097,6 +1446,13 @@ class MainWindow(QMainWindow):
             return
         try:
             df, time_col = read_csv(path)
+            
+            # 天候データの結合を試みる
+            if time_col:
+                df, has_weather = merge_weather_data(df, code, ym, time_col)
+                if has_weather:
+                    self.append_ai_log("天候データを結合しました。")
+
             numeric_columns = [
                 str(col)
                 for col in df.columns
@@ -1615,6 +1971,380 @@ class MainWindow(QMainWindow):
                 val_str = f", Val: {val_loss:.6f}" if val_loss is not None else ""
                 self.append_ai_log(f"  Epoch {i:2d}: Train: {train_loss:.6f}{val_str}")
 
+    def run_weather_analysis(self) -> None:
+        """天候データと発電量の関係を分析"""
+        self.append_ai_log("=" * 50)
+        self.append_ai_log("天候データ分析を開始します...")
+        
+        # エリアと年月を取得
+        code = self.ai_area_combo.currentData()
+        ym = self.ai_ym_combo.currentData()
+        
+        if not code or not ym:
+            QtWidgets.QMessageBox.warning(self, "警告", "エリアと年月を選択してください。")
+            return
+        
+        # 電力データを読み込み
+        path = DATA_DIR / f"eria_jukyu_{ym}_{code}.csv"
+        if not path.exists():
+            QtWidgets.QMessageBox.warning(self, "エラー", f"ファイルが見つかりません: {path.name}")
+            return
+        
+        try:
+            df_power, time_col = read_csv(path)
+            self.append_ai_log(f"{path.name} を読み込みました (行数: {len(df_power):,}).")
+            
+            # 天候データと結合
+            df_merged, has_weather = merge_weather_data(df_power, code, ym, time_col)
+            
+            if not has_weather:
+                city_name = AREA_WEATHER_MAP.get(code, "不明")
+                area_name = AREA_INFO.get(code, AreaInfo("不明", "")).name
+                
+                # 利用可能な天候ファイルをリストアップ
+                available_files = []
+                if WEATHER_DIR.exists():
+                    available_files = [f.name for f in WEATHER_DIR.glob("*.csv")]
+                
+                msg = (
+                    f"エリア: {code} ({area_name})\n"
+                    f"対象年月: {ym[:4]}年{ym[4:6]}月\n"
+                    f"期待ファイル: weather/{city_name}_YYYYMMDD_YYYYMMDD.csv\n\n"
+                )
+                
+                if available_files:
+                    msg += f"利用可能な天候ファイル:\n" + "\n".join([f"  - {f}" for f in available_files[:5]])
+                    if len(available_files) > 5:
+                        msg += f"\n  ... 他{len(available_files)-5}件"
+                else:
+                    msg += "天候データフォルダにファイルがありません。"
+                
+                QtWidgets.QMessageBox.warning(self, "天候データなし", msg)
+                self.append_ai_log(f"天候データが見つかりませんでした: {city_name}_*.csv (対象: {ym})")
+                return
+            
+            self.append_ai_log(f"天候データを結合しました。")
+            
+            # 発電種別と天候の列を抽出
+            generation_cols = []
+            for category, col_names in GENERATION_CATEGORIES.items():
+                for col_name in col_names:
+                    if col_name in df_merged.columns:
+                        generation_cols.append((category, col_name))
+                        break
+            
+            weather_cols = {
+                "temperature": "気温(℃)",
+                "solar_radiation": "日射量(MJ/㎡)",
+                "sunlight": "日照時間(h)",
+                "wind_speed": "風速(m/s)",
+                "precipitation": "降水量(mm)"
+            }
+            
+            # 利用可能な天候列を確認
+            available_weather = {k: v for k, v in weather_cols.items() if k in df_merged.columns}
+            
+            if not available_weather:
+                QtWidgets.QMessageBox.warning(self, "エラー", "天候データ列が見つかりません。")
+                return
+            
+            self.append_ai_log(f"発電種別: {len(generation_cols)}種類")
+            self.append_ai_log(f"天候指標: {', '.join(available_weather.values())}")
+            
+            # プロット
+            self.ai_weather_canvas.fig.clear()
+            
+            # サブプロット数を計算
+            n_weather = len(available_weather)
+            n_generation = min(3, len(generation_cols))  # 最大3種類の発電方式
+            
+            if n_generation == 0:
+                QtWidgets.QMessageBox.warning(self, "エラー", "発電データが見つかりません。")
+                return
+            
+            # 重要な発電方式を選択（太陽光、風力、需要実績を優先）
+            priority_categories = ["太陽光", "風力", "火力", "水力", "原子力"]
+            selected_generation = []
+            
+            for cat in priority_categories:
+                for gen_cat, gen_col in generation_cols:
+                    if gen_cat == cat and len(selected_generation) < n_generation:
+                        selected_generation.append((gen_cat, gen_col))
+                        break
+                if len(selected_generation) >= n_generation:
+                    break
+            
+            # 不足分を補充
+            if len(selected_generation) < n_generation:
+                for gen_cat, gen_col in generation_cols:
+                    if (gen_cat, gen_col) not in selected_generation:
+                        selected_generation.append((gen_cat, gen_col))
+                        if len(selected_generation) >= n_generation:
+                            break
+            
+            # グリッドレイアウト
+            n_rows = len(selected_generation)
+            n_cols = min(2, n_weather)  # 最大2列
+            
+            plot_idx = 1
+            correlations = []
+            
+            for i, (gen_cat, gen_col) in enumerate(selected_generation):
+                # 主要な天候指標（気温と日射量）を優先
+                primary_weather = []
+                if "temperature" in available_weather:
+                    primary_weather.append(("temperature", available_weather["temperature"]))
+                if "solar_radiation" in available_weather:
+                    primary_weather.append(("solar_radiation", available_weather["solar_radiation"]))
+                elif "sunlight" in available_weather:
+                    primary_weather.append(("sunlight", available_weather["sunlight"]))
+                
+                for j, (weather_key, weather_label) in enumerate(primary_weather[:n_cols]):
+                    ax = self.ai_weather_canvas.fig.add_subplot(n_rows, n_cols, plot_idx)
+                    plot_idx += 1
+                    
+                    # データを準備（NaNを除去）
+                    mask = df_merged[gen_col].notna() & df_merged[weather_key].notna()
+                    x_data = df_merged.loc[mask, weather_key]
+                    y_data = df_merged.loc[mask, gen_col]
+                    
+                    if len(x_data) < 2:
+                        ax.text(0.5, 0.5, "データ不足", ha='center', va='center', transform=ax.transAxes)
+                        continue
+                    
+                    # 散布図
+                    ax.scatter(x_data, y_data, alpha=0.3, s=20, color='#0068B7')
+                    
+                    # 回帰直線
+                    try:
+                        from scipy.stats import linregress
+                        slope, intercept, r_value, p_value, std_err = linregress(x_data, y_data)
+                        line_x = np.array([x_data.min(), x_data.max()])
+                        line_y = slope * line_x + intercept
+                        ax.plot(line_x, line_y, 'r--', linewidth=2, label=f'R²={r_value**2:.3f}')
+                        correlations.append((gen_cat, weather_label, r_value, p_value))
+                    except Exception:
+                        pass
+                    
+                    ax.set_xlabel(weather_label, fontsize=9)
+                    ax.set_ylabel(f'{gen_cat} (万kW)', fontsize=9)
+                    ax.set_title(f'{gen_cat} vs {weather_label}', fontsize=10, fontweight='bold')
+                    ax.legend(fontsize=8)
+                    ax.grid(True, alpha=0.3)
+            
+            self.ai_weather_canvas.fig.tight_layout()
+            self.ai_weather_canvas.draw()
+            
+            # 相関係数レポート
+            report = f"天候データと発電量の相関分析\n{'='*60}\n\n"
+            report += f"エリア: {AREA_INFO[code].name}\n"
+            report += f"期間: {ym[:4]}年{ym[4:6]}月\n"
+            report += f"データ数: {len(df_merged):,}件\n\n"
+            report += "相関分析結果:\n"
+            report += "-" * 60 + "\n"
+            
+            for gen_cat, weather_label, r_value, p_value in correlations:
+                significance = "***" if p_value < 0.001 else "**" if p_value < 0.01 else "*" if p_value < 0.05 else "n.s."
+                report += f"{gen_cat} × {weather_label}:\n"
+                report += f"  相関係数 (r): {r_value:>8.4f}\n"
+                report += f"  決定係数 (R²): {r_value**2:>8.4f}\n"
+                report += f"  p値:        {p_value:>8.6f} {significance}\n\n"
+            
+            report += "\n注: ***p<0.001, **p<0.01, *p<0.05, n.s.=有意差なし\n"
+            
+            self.ai_eval_widget.setPlainText(report)
+            
+            # ログ出力
+            self.append_ai_log("相関分析完了:")
+            for gen_cat, weather_label, r_value, p_value in correlations:
+                self.append_ai_log(f"  {gen_cat} × {weather_label}: r={r_value:.3f}, p={p_value:.4f}")
+            
+            self.ai_tabs.setCurrentIndex(4)  # 天候分析タブに切り替え
+            
+        except Exception as e:
+            import traceback
+            self.append_ai_log(f"エラー: {str(e)}")
+            self.append_ai_log(traceback.format_exc())
+            QtWidgets.QMessageBox.critical(self, "エラー", f"天候分析に失敗しました:\n{str(e)}")
+
+    def run_weather_forecast(self) -> None:
+        """天候データを考慮した需要予測（ARIMAX）"""
+        try:
+            from statsmodels.tsa.statespace.sarimax import SARIMAX
+            from sklearn.metrics import mean_absolute_error, mean_squared_error
+        except ImportError as e:
+            self.append_ai_log(f"ライブラリのインポートエラー: {str(e)}")
+            QtWidgets.QMessageBox.critical(self, "エラー", f"必要なライブラリがインストールされていません:\n{str(e)}\n\npip install statsmodels scikit-learn")
+            return
+        
+        self.append_ai_log("=" * 50)
+        self.append_ai_log("天候考慮予測（ARIMAX）を開始します...")
+        
+        # エリアと年月を取得
+        code = self.ai_area_combo.currentData()
+        ym = self.ai_ym_combo.currentData()
+        col_name = self.ai_column_combo.currentText()
+        
+        if not code or not ym or not col_name:
+            QtWidgets.QMessageBox.warning(self, "警告", "エリア、年月、目的変数を選択してください。")
+            return
+        
+        # 電力データを読み込み
+        path = DATA_DIR / f"eria_jukyu_{ym}_{code}.csv"
+        if not path.exists():
+            QtWidgets.QMessageBox.warning(self, "エラー", f"ファイルが見つかりません: {path.name}")
+            return
+        
+        try:
+            df_power, time_col = read_csv(path)
+            self.append_ai_log(f"{path.name} を読み込みました (行数: {len(df_power):,}).")
+            
+            # 天候データと結合
+            df_merged, has_weather = merge_weather_data(df_power, code, ym, time_col)
+            
+            if not has_weather:
+                city_name = AREA_WEATHER_MAP.get(code, "不明")
+                area_name = AREA_INFO.get(code, AreaInfo("不明", "")).name
+                
+                # 利用可能な天候ファイルをリストアップ
+                available_files = []
+                if WEATHER_DIR.exists():
+                    available_files = [f.name for f in WEATHER_DIR.glob("*.csv")]
+                
+                msg = (
+                    f"エリア: {code} ({area_name})\n"
+                    f"対象年月: {ym[:4]}年{ym[4:6]}月\n"
+                    f"期待ファイル: weather/{city_name}_YYYYMMDD_YYYYMMDD.csv\n\n"
+                    "天候予測には天候データが必要です。\n\n"
+                )
+                
+                if available_files:
+                    msg += f"利用可能な天候ファイル:\n" + "\n".join([f"  - {f}" for f in available_files[:5]])
+                else:
+                    msg += "天候データフォルダにファイルがありません。"
+                
+                QtWidgets.QMessageBox.warning(self, "天候データなし", msg)
+                self.append_ai_log(f"天候データが見つかりませんでした: {city_name}_*.csv (対象: {ym})")
+                return
+            
+            self.append_ai_log(f"天候データを結合しました。")
+            
+            # 目的変数と外部変数を準備
+            if col_name not in df_merged.columns:
+                QtWidgets.QMessageBox.warning(self, "エラー", f"目的変数 '{col_name}' が見つかりません。")
+                return
+            
+            # 目的変数（需要実績など）
+            y = pd.to_numeric(df_merged[col_name], errors="coerce")
+            
+            # 外部変数（天候データ）を選択
+            exog_cols = []
+            if "temperature" in df_merged.columns:
+                exog_cols.append("temperature")
+            if "solar_radiation" in df_merged.columns:
+                exog_cols.append("solar_radiation")
+            elif "sunlight" in df_merged.columns:
+                exog_cols.append("sunlight")
+            if "wind_speed" in df_merged.columns:
+                exog_cols.append("wind_speed")
+            
+            if not exog_cols:
+                QtWidgets.QMessageBox.warning(self, "エラー", "利用可能な天候データがありません。")
+                return
+            
+            self.append_ai_log(f"外部変数: {', '.join(exog_cols)}")
+            
+            # 外部変数のDataFrameを作成
+            exog = df_merged[exog_cols].copy()
+            for col in exog_cols:
+                exog[col] = pd.to_numeric(exog[col], errors="coerce")
+            
+            # 欠損値を処理（線形補間）
+            y = y.interpolate(method='linear', limit_direction='both').fillna(method='ffill').fillna(method='bfill')
+            exog = exog.interpolate(method='linear', limit_direction='both').fillna(method='ffill').fillna(method='bfill')
+            
+            # 訓練/テストデータ分割
+            train_ratio = self.train_ratio_spin.value()
+            train_size = int(len(y) * train_ratio)
+            
+            y_train, y_test = y[:train_size], y[train_size:]
+            exog_train, exog_test = exog[:train_size], exog[train_size:]
+            
+            if len(y_test) == 0:
+                QtWidgets.QMessageBox.warning(self, "警告", "テストデータがありません。訓練データ比率を調整してください。")
+                return
+            
+            self.append_ai_log(f"訓練データ: {len(y_train)}サンプル, テストデータ: {len(y_test)}サンプル")
+            self.append_ai_log("SARIMAXモデルを学習中...")
+            
+            # SARIMAXモデル（外部変数あり）
+            # order=(1,1,1): p=1, d=1, q=1 - パラメータは調整可能
+            model = SARIMAX(y_train, exog=exog_train, order=(1, 1, 1), enforce_stationarity=False, enforce_invertibility=False)
+            fitted = model.fit(disp=False, maxiter=50)
+            
+            self.append_ai_log("モデル学習完了。予測を実行中...")
+            
+            # 予測
+            forecast_steps = min(self.ai_horizon_spin.value(), len(y_test))
+            forecast = fitted.forecast(steps=forecast_steps, exog=exog_test[:forecast_steps])
+            
+            # 評価指標
+            actual = y_test[:forecast_steps]
+            mae = mean_absolute_error(actual, forecast)
+            rmse = np.sqrt(mean_squared_error(actual, forecast))
+            mape = np.mean(np.abs((actual - forecast) / actual)) * 100
+            
+            # プロット
+            self.ai_result_canvas.fig.clear()
+            ax = self.ai_result_canvas.fig.add_subplot(1, 1, 1)
+            
+            # 訓練データ
+            ax.plot(range(len(y_train)), y_train.values, label='訓練データ', color='#0068B7', linewidth=1.5, alpha=0.8)
+            
+            # テストデータ
+            test_idx = range(len(y_train), len(y_train) + len(actual))
+            ax.plot(test_idx, actual.values, label='実測値', color='#10b981', linewidth=1.5)
+            
+            # 予測値
+            ax.plot(test_idx, forecast.values, label='ARIMAX予測 (天候考慮)', color='#ef4444', linewidth=2, linestyle='--')
+            
+            ax.set_xlabel('時刻インデックス', fontsize=11)
+            ax.set_ylabel(col_name, fontsize=11)
+            ax.set_title(f'ARIMAX予測結果（天候データ考慮）', fontsize=14, fontweight='bold', color='#0068B7')
+            ax.legend(loc='best', fontsize=10)
+            ax.grid(True, alpha=0.3)
+            
+            self.ai_result_canvas.fig.tight_layout()
+            self.ai_result_canvas.draw()
+            
+            # 評価結果
+            self.ai_eval_widget.setPlainText(
+                f"ARIMAX予測モデル評価（天候データ考慮）\n{'='*60}\n\n"
+                f"モデル: SARIMAX(1, 1, 1)\n"
+                f"訓練サンプル数: {len(y_train)}\n"
+                f"予測期間: {forecast_steps}ステップ\n\n"
+                f"外部変数（天候データ）:\n"
+                f"  {', '.join([f'{col}' for col in exog_cols])}\n\n"
+                f"評価指標:\n"
+                f"  MAE  (平均絶対誤差):     {mae:.4f}\n"
+                f"  RMSE (二乗平均平方根誤差): {rmse:.4f}\n"
+                f"  MAPE (平均絶対パーセント誤差): {mape:.2f}%\n\n"
+                f"モデル要約:\n{fitted.summary().as_text()}"
+            )
+            
+            # 残差分析
+            residuals = actual.values - forecast.values
+            self.plot_residual_analysis(pd.Series(residuals))
+            
+            self.append_ai_log(f"ARIMAX予測完了 - MAE: {mae:.2f}, RMSE: {rmse:.2f}, MAPE: {mape:.2f}%")
+            self.ai_tabs.setCurrentIndex(1)
+            
+        except Exception as e:
+            import traceback
+            self.append_ai_log(f"エラー: {str(e)}")
+            self.append_ai_log(traceback.format_exc())
+            QtWidgets.QMessageBox.critical(self, "エラー", f"天候予測に失敗しました:\n{str(e)}")
+
     def prepare_ai_dataset(self) -> None:
         if self.ai_dataframe is None:
             self.load_ai_dataset()
@@ -1815,15 +2545,30 @@ class MainWindow(QMainWindow):
         area_group.setLayout(area_layout)
         layout.addWidget(area_group)
 
-        # Year-month selector
+        # Year-month selector (分離版)
         ym_group = QGroupBox("対象の年月")
-        ym_layout = QVBoxLayout()
-        self.ym_combo = QComboBox()
-        self.ym_combo.setMinimumHeight(36)
-        self.ym_combo.currentIndexChanged.connect(self.on_ym_change)
-        ym_layout.addWidget(self.ym_combo)
+        ym_layout = QGridLayout()
+        
+        # 年選択
+        ym_layout.addWidget(QLabel("年:"), 0, 0)
+        self.year_combo = QComboBox()
+        self.year_combo.setMinimumHeight(36)
+        self.year_combo.currentIndexChanged.connect(self.on_year_month_change)
+        ym_layout.addWidget(self.year_combo, 0, 1)
+        
+        # 月選択
+        ym_layout.addWidget(QLabel("月:"), 1, 0)
+        self.month_combo = QComboBox()
+        self.month_combo.setMinimumHeight(36)
+        self.month_combo.currentIndexChanged.connect(self.on_year_month_change)
+        ym_layout.addWidget(self.month_combo, 1, 1)
+        
         ym_group.setLayout(ym_layout)
         layout.addWidget(ym_group)
+        
+        # 後方互換性のため、ym_comboも保持（非表示）
+        self.ym_combo = QComboBox()
+        self.ym_combo.setVisible(False)
 
         # Date filter selector
         date_group = QGroupBox("日付範囲")
@@ -2009,8 +2754,13 @@ class MainWindow(QMainWindow):
         self.legend_check = QCheckBox("凡例を表示")
         self.legend_check.setChecked(self.graph_settings["legend"])
         self.legend_check.toggled.connect(lambda: self.update_setting("legend", self.legend_check.isChecked()))
+        self.detailed_ticks_check = QCheckBox("軸の目盛りを細かく表示")
+        self.detailed_ticks_check.setChecked(self.graph_settings.get("detailed_ticks", False))
+        self.detailed_ticks_check.setToolTip("拡大表示時に軸の目盛りをより細かく表示します")
+        self.detailed_ticks_check.toggled.connect(lambda: self.update_setting("detailed_ticks", self.detailed_ticks_check.isChecked()))
         options_layout.addWidget(self.grid_check)
         options_layout.addWidget(self.legend_check)
+        options_layout.addWidget(self.detailed_ticks_check)
         legend_row = QHBoxLayout()
         legend_row.addWidget(QLabel("凡例の位置:"))
         self.legend_loc_combo = QComboBox()
@@ -2045,7 +2795,281 @@ class MainWindow(QMainWindow):
         layout.addWidget(scroll)
         return panel
     
+    def create_preview_panel(self) -> QWidget:
+        """データプレビュー用パネルを作成"""
+        panel = QWidget()
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(12)
+
+        frame_style = """
+            QFrame {
+                border: 2px solid #a0d2ff;
+                border-radius: 10px;
+                background-color: #ffffff;
+                padding: 10px;
+            }
+        """
+
+        table_container = QFrame()
+        table_container.setStyleSheet(frame_style)
+        table_layout = QVBoxLayout(table_container)
+        table_layout.setContentsMargins(5, 5, 5, 5)
+        table_layout.setSpacing(6)
+
+        self.preview_info_label = QLabel("データを読み込むとプレビューを表示します")
+        self.preview_info_label.setStyleSheet("font-weight: 600; color: #0068B7; font-size: 14px;")
+        table_layout.addWidget(self.preview_info_label)
+
+        self.preview_table = QTableWidget()
+        self.preview_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+        self.preview_table.setAlternatingRowColors(True)
+        self.preview_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
+        self.preview_table.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
+        self.preview_table.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.Stretch)
+        self.preview_table.verticalHeader().setVisible(False)
+        self.preview_table.setStyleSheet(
+            """
+            QTableWidget {
+                background-color: #ffffff;
+                alternate-background-color: #f8fafc;
+                border: none;
+                color: #2d3748;
+                font-size: 12px;
+            }
+            """
+        )
+        table_layout.addWidget(self.preview_table)
+        layout.addWidget(table_container)
+        return panel
+
+    def create_graph_only_panel(self) -> QWidget:
+        """グラフ表示専用パネルを作成"""
+        panel = QWidget()
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(12)
+
+        frame_style = """
+            QFrame {
+                border: 2px solid #a0d2ff;
+                border-radius: 10px;
+                background-color: #ffffff;
+                padding: 10px;
+            }
+        """
+
+        canvas_container = QFrame()
+        canvas_container.setStyleSheet(frame_style)
+        canvas_layout = QVBoxLayout(canvas_container)
+        canvas_layout.setContentsMargins(5, 5, 5, 5)
+
+        self.canvas = MplCanvas(
+            width=self.graph_settings["figsize_w"],
+            height=self.graph_settings["figsize_h"],
+            dpi=self.graph_settings["dpi"],
+        )
+        
+        # NavigationToolbarを追加（ズーム・パン機能）
+        self.toolbar = NavigationToolbar(self.canvas, panel)
+        self.toolbar.setStyleSheet("""
+            QToolBar {
+                background-color: #f0f9ff;
+                border: 1px solid #bfdbfe;
+                border-radius: 5px;
+                padding: 3px;
+            }
+            QToolButton {
+                background-color: transparent;
+                border: none;
+                padding: 5px;
+            }
+            QToolButton:hover {
+                background-color: #dbeafe;
+                border-radius: 3px;
+            }
+        """)
+        canvas_layout.addWidget(self.toolbar)
+        canvas_layout.addWidget(self.canvas, stretch=1)
+        layout.addWidget(canvas_container, stretch=1)
+        
+        return panel
+
+    def create_collection_panel(self) -> QWidget:
+        """並列比較用コレクションパネルを作成"""
+        panel = QWidget()
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(12)
+
+        # コレクションヘッダー
+        collection_header = QHBoxLayout()
+        collection_header.setSpacing(10)
+        collection_title = QLabel("🗂 並列比較用グラフコレクション")
+        collection_title.setStyleSheet("font-size: 16px; font-weight: 600; color: #0068B7;")
+        collection_header.addWidget(collection_title)
+        collection_header.addStretch()
+        self.collection_info_label = QLabel("0件を保存中")
+        self.collection_info_label.setStyleSheet("color: #4a5568; font-size: 13px;")
+        collection_header.addWidget(self.collection_info_label)
+        
+        # 重ね合わせ表示ボタン
+        overlay_btn = QPushButton("📊 選択したグラフを重ね合わせ")
+        overlay_btn.setMinimumHeight(36)
+        overlay_btn.setMaximumWidth(200)
+        overlay_btn.setStyleSheet("""
+            QPushButton {
+                background: #10b981;
+                color: white;
+                font-weight: 600;
+                border-radius: 5px;
+                padding: 0 15px;
+            }
+            QPushButton:hover {
+                background: #059669;
+            }
+        """)
+        overlay_btn.clicked.connect(self.overlay_selected_graphs)
+        collection_header.addWidget(overlay_btn)
+        
+        clear_btn = QPushButton("🧹 全削除")
+        clear_btn.setMinimumHeight(36)
+        clear_btn.setMaximumWidth(120)
+        clear_btn.setStyleSheet("""
+            QPushButton {
+                background: #ef4444;
+                color: white;
+                font-weight: 600;
+                border-radius: 5px;
+                padding: 0 15px;
+            }
+            QPushButton:hover {
+                background: #dc2626;
+            }
+        """)
+        clear_btn.clicked.connect(self.clear_graph_collection)
+        collection_header.addWidget(clear_btn)
+        layout.addLayout(collection_header)
+
+        # 重ね合わせモード選択
+        overlay_mode_frame = QFrame()
+        overlay_mode_frame.setStyleSheet("""
+            QFrame {
+                background-color: #f0f9ff;
+                border: 1px solid #bfdbfe;
+                border-radius: 5px;
+                padding: 8px;
+            }
+        """)
+        overlay_mode_layout = QHBoxLayout(overlay_mode_frame)
+        overlay_mode_layout.setContentsMargins(10, 8, 10, 8)
+        
+        overlay_mode_label = QLabel("重ね合わせモード:")
+        overlay_mode_label.setStyleSheet("font-weight: 600; color: #0068B7;")
+        overlay_mode_layout.addWidget(overlay_mode_label)
+        
+        self.overlay_mode_group = QtWidgets.QButtonGroup(panel)
+        self.overlay_time_radio = QtWidgets.QRadioButton("時系列順（時刻で結合）")
+        self.overlay_time_radio.setToolTip("時刻データを基準に、同じ時刻のデータを重ね合わせます")
+        self.overlay_time_radio.setChecked(True)
+        self.overlay_index_radio = QtWidgets.QRadioButton("X軸共有（値の単純比較）")
+        self.overlay_index_radio.setToolTip("X軸のインデックスを共有し、データポイントの順序で比較します")
+        
+        self.overlay_mode_group.addButton(self.overlay_time_radio)
+        self.overlay_mode_group.addButton(self.overlay_index_radio)
+        
+        overlay_mode_layout.addWidget(self.overlay_time_radio)
+        overlay_mode_layout.addWidget(self.overlay_index_radio)
+        overlay_mode_layout.addStretch()
+        
+        layout.addWidget(overlay_mode_frame)
+        
+        # 説明文
+        info_label = QLabel("「📌 コレクションに追加」ボタンで現在のグラフを保存できます。チェックボックスで複数選択し、「📊 選択したグラフを重ね合わせ」で同一グラフに表示できます。")
+        info_label.setStyleSheet("color: #6b7280; font-size: 12px; padding: 5px 10px;")
+        info_label.setWordWrap(True)
+        layout.addWidget(info_label)
+
+        # コレクションスクロールエリア
+        self.graph_collection_scroll = QScrollArea()
+        self.graph_collection_scroll.setWidgetResizable(True)
+        self.graph_collection_scroll.setStyleSheet("""
+            QScrollArea {
+                border: 2px solid #a0d2ff;
+                border-radius: 10px;
+                background-color: #f9fafb;
+            }
+        """)
+        self.graph_collection_container = QWidget()
+        self.graph_collection_layout = QVBoxLayout(self.graph_collection_container)
+        self.graph_collection_layout.setContentsMargins(10, 10, 10, 10)
+        self.graph_collection_layout.setSpacing(15)
+        self.graph_collection_layout.setAlignment(Qt.AlignTop)
+        self.graph_collection_scroll.setWidget(self.graph_collection_container)
+        layout.addWidget(self.graph_collection_scroll, stretch=1)
+        
+        return panel
+
+    def create_graph_panel(self) -> QWidget:
+        """後方互換性のために残すダミー関数（グラフ+コレクション統合版）"""
+        panel = QWidget()
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(12)
+
+        frame_style = """
+            QFrame {
+                border: 2px solid #a0d2ff;
+                border-radius: 10px;
+                background-color: #ffffff;
+                padding: 10px;
+            }
+        """
+
+        canvas_container = QFrame()
+        canvas_container.setStyleSheet(frame_style)
+        canvas_layout = QVBoxLayout(canvas_container)
+        canvas_layout.setContentsMargins(5, 5, 5, 5)
+
+        self.canvas = MplCanvas(
+            width=self.graph_settings["figsize_w"],
+            height=self.graph_settings["figsize_h"],
+            dpi=self.graph_settings["dpi"],
+        )
+        canvas_layout.addWidget(self.canvas, stretch=1)
+        layout.addWidget(canvas_container, stretch=1)
+
+        # コレクション部分を追加
+        collection_header = QHBoxLayout()
+        collection_header.setSpacing(10)
+        collection_title = QLabel("🗂 並列比較用グラフコレクション")
+        collection_title.setStyleSheet("font-size: 15px; font-weight: 600; color: #0068B7;")
+        collection_header.addWidget(collection_title)
+        collection_header.addStretch()
+        self.collection_info_label = QLabel("0件を保存中")
+        self.collection_info_label.setStyleSheet("color: #4a5568;")
+        collection_header.addWidget(self.collection_info_label)
+        clear_btn = QPushButton("🧹 全削除")
+        clear_btn.setMaximumWidth(120)
+        clear_btn.clicked.connect(self.clear_graph_collection)
+        collection_header.addWidget(clear_btn)
+        layout.addLayout(collection_header)
+
+        self.graph_collection_scroll = QScrollArea()
+        self.graph_collection_scroll.setWidgetResizable(True)
+        self.graph_collection_scroll.setMinimumHeight(240)
+        self.graph_collection_container = QWidget()
+        self.graph_collection_layout = QVBoxLayout(self.graph_collection_container)
+        self.graph_collection_layout.setContentsMargins(5, 5, 5, 5)
+        self.graph_collection_layout.setSpacing(12)
+        self.graph_collection_layout.setAlignment(Qt.AlignTop)
+        self.graph_collection_scroll.setWidget(self.graph_collection_container)
+        layout.addWidget(self.graph_collection_scroll)
+        
+        return panel
+
     def create_graph_display_panel(self) -> QWidget:
+        """後方互換性のために残すダミー関数"""
         panel = QWidget()
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(10, 10, 10, 10)
@@ -2112,32 +3136,6 @@ class MainWindow(QMainWindow):
         splitter.addWidget(canvas_container)
         splitter.setSizes([280, 520])
         layout.addWidget(splitter, stretch=1)
-
-        collection_header = QHBoxLayout()
-        collection_header.setSpacing(10)
-        collection_title = QLabel("🗂 並列比較用グラフコレクション")
-        collection_title.setStyleSheet("font-size: 15px; font-weight: 600; color: #0068B7;")
-        collection_header.addWidget(collection_title)
-        collection_header.addStretch()
-        self.collection_info_label = QLabel("0件を保存中")
-        self.collection_info_label.setStyleSheet("color: #4a5568;")
-        collection_header.addWidget(self.collection_info_label)
-        clear_btn = QPushButton("🧹 全削除")
-        clear_btn.setMaximumWidth(120)
-        clear_btn.clicked.connect(self.clear_graph_collection)
-        collection_header.addWidget(clear_btn)
-        layout.addLayout(collection_header)
-
-        self.graph_collection_scroll = QScrollArea()
-        self.graph_collection_scroll.setWidgetResizable(True)
-        self.graph_collection_scroll.setMinimumHeight(240)
-        self.graph_collection_container = QWidget()
-        self.graph_collection_layout = QVBoxLayout(self.graph_collection_container)
-        self.graph_collection_layout.setContentsMargins(5, 5, 5, 5)
-        self.graph_collection_layout.setSpacing(12)
-        self.graph_collection_layout.setAlignment(Qt.AlignTop)
-        self.graph_collection_scroll.setWidget(self.graph_collection_container)
-        layout.addWidget(self.graph_collection_scroll)
         return panel
     
     def update_setting(self, key, value):
@@ -2341,6 +3339,153 @@ class MainWindow(QMainWindow):
         # 保存済みグラフを全て削除
         for card in list(self.graph_collection_widgets):
             self.remove_graph_card(card)
+
+    def overlay_selected_graphs(self):
+        """選択されたグラフを重ね合わせて表示"""
+        selected_cards = [card for card in self.graph_collection_widgets if card.overlay_checkbox.isChecked()]
+        
+        if len(selected_cards) < 2:
+            QtWidgets.QMessageBox.warning(
+                self, 
+                "警告", 
+                "重ね合わせるには2つ以上のグラフを選択してください。"
+            )
+            return
+        
+        # 選択されたモードを確認
+        use_time_mode = self.overlay_time_radio.isChecked()
+        
+        # メインキャンバスをクリアして重ね合わせ表示
+        self.canvas.fig.clear()
+        ax = self.canvas.fig.add_subplot(111)
+        ax.set_facecolor("#f8fafc")
+        
+        # カラーパレット
+        colors = ['#0068B7', '#10b981', '#ef4444', '#f59e0b', '#8b5cf6', '#ec4899', '#06b6d4', '#84cc16']
+        
+        if use_time_mode:
+            # モード1: 時系列順（時刻で結合）
+            # 各カードから元のDataFrameデータを取得して時刻で結合
+            for idx, card in enumerate(selected_cards):
+                color = colors[idx % len(colors)]
+                
+                # スナップショットから元データを読み込み
+                code = card.snapshot.area_code
+                ym = card.snapshot.year_month
+                path = DATA_DIR / f"eria_jukyu_{ym}_{code}.csv"
+                
+                if not path.exists():
+                    continue
+                
+                try:
+                    # CSVファイルを読み込み
+                    df = pd.read_csv(path, encoding="shift_jis", skiprows=1)
+                    
+                    # 時刻列を探す
+                    time_col = None
+                    for col in df.columns:
+                        col_lower = str(col).lower()
+                        if any(kw in col_lower for kw in ["date", "time", "日時", "時刻", "年月日"]):
+                            time_col = col
+                            break
+                    
+                    if time_col:
+                        # 時刻列をDatetime型に変換
+                        df[time_col] = pd.to_datetime(df[time_col], errors='coerce')
+                        df = df.dropna(subset=[time_col])
+                        
+                        # 選択された列をプロット
+                        for column in card.snapshot.columns:
+                            if column in df.columns:
+                                valid = df[column].notna()
+                                label = f"{card.snapshot.area_name} - {column}"
+                                ax.plot(
+                                    df[time_col][valid],
+                                    df[column][valid],
+                                    color=color,
+                                    linewidth=2,
+                                    alpha=0.8,
+                                    label=label,
+                                    marker='o',
+                                    markersize=3
+                                )
+                        
+                        # X軸の日時フォーマットを調整
+                        self.canvas.fig.autofmt_xdate(rotation=45)
+                except Exception as e:
+                    print(f"データ読み込みエラー ({card.snapshot.area_name}): {e}")
+                    continue
+            
+            ax.set_xlabel('時刻（時系列順）', fontsize=12, fontweight='bold')
+            ax.set_title('選択グラフの重ね合わせ表示（時系列順）', fontsize=16, fontweight='bold', color='#0068B7', pad=20)
+        
+        else:
+            # モード2: X軸共有（値の単純比較）
+            # インデックスベースでプロット（日数として表示）
+            for idx, card in enumerate(selected_cards):
+                color = colors[idx % len(colors)]
+                
+                # カードのキャンバスから線データを取得して再描画
+                for line in card.canvas.ax.get_lines():
+                    xdata = line.get_xdata()
+                    ydata = line.get_ydata()
+                    label = line.get_label()
+                    
+                    # データポイントを日数として表示（1日目から開始）
+                    x_days = [i + 1 for i in range(len(ydata))]
+                    
+                    # ラベルにエリア情報を追加
+                    if not label.startswith('_'):
+                        enhanced_label = f"{card.snapshot.area_name} - {label}"
+                    else:
+                        enhanced_label = f"{card.snapshot.area_name}"
+                    
+                    ax.plot(x_days, ydata, color=color, linewidth=2, alpha=0.8, label=enhanced_label, marker='o', markersize=3)
+            
+            ax.set_xlabel('日数', fontsize=12, fontweight='bold')
+            ax.set_title('選択グラフの重ね合わせ表示（X軸共有）', fontsize=16, fontweight='bold', color='#0068B7', pad=20)
+            
+            # X軸を整数で表示（日数）
+            ax.xaxis.set_major_locator(ticker.MaxNLocator(integer=True))
+        
+        # 共通の軸ラベルとスタイル
+        ax.set_ylabel('電力量 (MWh)', fontsize=12, fontweight='bold')
+        
+        # 凡例
+        ax.legend(loc='best', fontsize=9, framealpha=0.9, ncol=1)
+        
+        # グリッド
+        ax.grid(True, alpha=0.3, linestyle='--')
+        
+        # 軸の装飾
+        ax.tick_params(colors="#2d3748", labelsize=10)
+        ax.spines["bottom"].set_color("#a0d2ff")
+        ax.spines["top"].set_color("#a0d2ff")
+        ax.spines["left"].set_color("#a0d2ff")
+        ax.spines["right"].set_color("#a0d2ff")
+        
+        # Y軸のフォーマット
+        ax.yaxis.set_major_formatter(ticker.FuncFormatter(lambda x, _pos: f"{int(x):,}"))
+        
+        self.canvas.fig.tight_layout()
+        self.canvas.draw()
+        
+        # グラフ表示タブに切り替え
+        if hasattr(self, 'tabs'):
+            # メインページのタブを取得
+            main_page_widget = self.tabs.widget(0)
+            if main_page_widget and hasattr(main_page_widget, 'findChild'):
+                right_tabs = main_page_widget.findChild(QTabWidget)
+                if right_tabs:
+                    # グラフ表示タブ（インデックス1）に切り替え
+                    right_tabs.setCurrentIndex(1)
+        
+        mode_text = "時系列順" if use_time_mode else "X軸共有"
+        QtWidgets.QMessageBox.information(
+            self,
+            "完了",
+            f"{len(selected_cards)}個のグラフを重ね合わせて表示しました。\nモード: {mode_text}"
+        )
 
     def update_graph_collection_info(self):
         # カード数のテキストを更新
@@ -2563,6 +3708,57 @@ class MainWindow(QMainWindow):
         self.refresh_area_year_months()
         self.refresh_availability_table()
 
+    def update_month_combo(self):
+        """選択された年に対応する月のリストを更新"""
+        if not hasattr(self, "year_combo") or not hasattr(self, "month_combo"):
+            return
+        
+        code = self.area_combo.currentData() if hasattr(self, "area_combo") else None
+        year = self.year_combo.currentData()
+        
+        if not code or not year:
+            return
+        
+        # 選択された年に対応する月を取得
+        year_months = self.area_year_months.get(code, [])
+        months = sorted([ym[4:6] for ym in year_months if ym.startswith(year)])
+        
+        self.month_combo.blockSignals(True)
+        self.month_combo.clear()
+        for month in months:
+            self.month_combo.addItem(f"{int(month)}月", month)
+        self.month_combo.blockSignals(False)
+        
+        if self.month_combo.count() > 0:
+            self.month_combo.setCurrentIndex(0)
+            self.on_year_month_change()
+
+    def on_year_month_change(self):
+        """年または月が変更された時の処理"""
+        if not hasattr(self, "year_combo") or not hasattr(self, "month_combo"):
+            return
+        
+        year = self.year_combo.currentData()
+        month = self.month_combo.currentData()
+        
+        if not year or not month:
+            return
+        
+        # 年月を結合してYYYYMM形式にする
+        ym = f"{year}{month}"
+        
+        # ym_comboも更新（後方互換性）
+        if hasattr(self, "ym_combo"):
+            for i in range(self.ym_combo.count()):
+                if self.ym_combo.itemData(i) == ym:
+                    self.ym_combo.blockSignals(True)
+                    self.ym_combo.setCurrentIndex(i)
+                    self.ym_combo.blockSignals(False)
+                    break
+        
+        # 既存のon_ym_change処理を実行
+        self.on_ym_change()
+
     def on_ym_change(self):
         # 年月が変更された時に日付リストを更新
         code = self.area_combo.currentData()
@@ -2728,6 +3924,24 @@ class MainWindow(QMainWindow):
         if settings["grid"]:
             canvas.ax.grid(True, alpha=0.3, color="#cbd5e0", linestyle="--", linewidth=0.8)
 
+        # 軸の目盛りを細かく表示するオプション
+        if settings.get("detailed_ticks", False):
+            # Y軸の目盛りを細かく
+            canvas.ax.yaxis.set_major_locator(ticker.MaxNLocator(nbins=15, integer=True))
+            canvas.ax.yaxis.set_minor_locator(ticker.AutoMinorLocator(2))
+            
+            # X軸の目盛りを細かく（時系列データの場合）
+            if time_column and time_column in df_filtered.columns:
+                # 時系列データの場合は自動で細かく調整
+                canvas.ax.xaxis.set_major_locator(ticker.MaxNLocator(nbins=20))
+                canvas.ax.xaxis.set_minor_locator(ticker.AutoMinorLocator(2))
+            else:
+                canvas.ax.xaxis.set_major_locator(ticker.MaxNLocator(nbins=15, integer=True))
+                canvas.ax.xaxis.set_minor_locator(ticker.AutoMinorLocator(2))
+            
+            # マイナー目盛りのグリッドも表示
+            canvas.ax.grid(which='minor', alpha=0.15, color="#cbd5e0", linestyle=":", linewidth=0.5)
+        
         canvas.ax.yaxis.set_major_formatter(ticker.FuncFormatter(lambda x, _pos: f"{int(x):,}"))
         canvas.update_size(settings["figsize_w"], settings["figsize_h"], settings["dpi"])
         canvas.fig.tight_layout(pad=2.0)
