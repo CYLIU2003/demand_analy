@@ -393,7 +393,7 @@ class MainWindow(QMainWindow):
         right_l.addWidget(canvas_container, stretch=1)
 
         bottom.addWidget(left); bottom.addWidget(right); bottom.setSizes([600,600])
-        root_layout.addWidget(bottom, stretch=3)
+        main_layout.addWidget(bottom, stretch=3)
 
         self.files = scan_files()
         self.avail, self.years, self.months = build_availability(self.files)

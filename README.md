@@ -26,12 +26,110 @@ Both applications expect monthly CSVs placed under a `data/` directory located n
 
 When new files are added, relaunch the apps or trigger the reload buttons to refresh the availability map.
 
+## System Requirements
+
+### Minimum Hardware Specifications
+
+#### JavaFX Client
+- **CPU**: Dual-core processor (2.0 GHz or higher)
+- **RAM**: 4 GB
+- **Storage**: 200 MB free space
+- **Display**: 1280×720 resolution or higher
+
+#### PySide6 Client (Basic Features)
+- **CPU**: Dual-core processor (2.5 GHz or higher)
+- **RAM**: 8 GB
+- **Storage**: 500 MB free space (including dependencies)
+- **Display**: 1920×1080 resolution recommended
+
+#### PySide6 Client (with AI/ML Features)
+- **CPU**: Quad-core processor (3.0 GHz or higher) recommended for Transformer models
+- **RAM**: 16 GB recommended (minimum 8 GB)
+  - ARIMA/Exponential Smoothing: 8 GB sufficient
+  - Transformer models: 16 GB recommended
+- **GPU**: Optional (CUDA-compatible GPU for faster Transformer training)
+  - CPU-only mode: Training takes ~1 minute for 1,400 samples
+  - GPU mode: Training significantly faster (requires CUDA-enabled PyTorch)
+- **Storage**: 2 GB free space (including PyTorch ~1.5 GB)
+- **Display**: 1920×1080 resolution or higher recommended
+
+### Software Requirements
+
+- **OS**: Windows 10/11, macOS 10.15+, or Linux (Ubuntu 20.04+)
+- **JavaFX**: JDK 17 or later
+- **Python**: 3.10, 3.11, or 3.12
+- **Browser**: Modern web browser for opening data source links
+
 ## Tooling Summary
 
 | Toolchain | Key Versions | Launch Command |
 |-----------|--------------|----------------|
 | JavaFX    | JDK 17+, JavaFX 21.0.4, OpenCSV 5.9 | `./gradlew run` |
-| PySide6   | Python 3.10+, PySide6 6.7.2, pandas 2.2.3 | `python main.py` |
+| PySide6   | Python 3.10+, PySide6 6.7.2, pandas 2.2.3, scipy 1.14.1, statsmodels 0.14.4 | `python main.py` |
+| PyTorch (Optional) | torch 2.4.1 (CPU), CUDA 11.8+ for GPU support | Enables Transformer forecasting |
+
+## ✨ New Features (v2.0)
+
+The PySide6 application now includes advanced **statistical analysis** and **AI-powered time series forecasting**:
+
+### 📊 Statistical Analysis Tab
+- **Descriptive Statistics**: Mean, median, standard deviation, skewness, kurtosis, CV
+- **Distribution Analysis**: Histograms and box plots with outlier detection
+- **Correlation Analysis**: Heatmap visualization of power generation correlations
+- **Hourly Demand Patterns**: Time-of-day analysis with confidence intervals
+
+### 🤖 AI Forecasting Tab
+- **STL Decomposition**: Separate trend, seasonal, and residual components
+- **ARIMA Forecasting**: Statistical time series prediction with model evaluation
+- **Exponential Smoothing**: Holt-Winters method for short-term forecasting
+- **Transformer Forecasting**: Deep learning-based predictions using attention mechanisms (requires PyTorch)
+- **Weather Correlation Analysis**: Analyze relationships between weather conditions and power generation
+- **Weather-Aware Forecasting (ARIMAX)**: Demand prediction using weather data as exogenous variables
+- **Model Evaluation**: MAE, RMSE, MAPE metrics with residual analysis
+
+For detailed documentation, see [FEATURES.md](FEATURES.md).
+
+### 🌤️ Weather Data Integration (v2.1)
+
+The application now supports integration with Japanese Meteorological Agency data:
+
+**Supported Weather Variables:**
+- Temperature (℃)
+- Precipitation (mm)
+- Sunshine duration (hours)
+- Wind speed & direction (m/s)
+- Solar radiation (MJ/m²)
+
+**Weather Data Format:**
+Place weather CSV files in `data/weather/` folder with naming pattern:
+```
+{city}_{YYYYMMDD}_{YYYYMMDD}.csv
+```
+
+**Example:**
+```
+tokyo_20250101_20250331.csv   # Tokyo area, Jan-Mar 2025
+osaka_20250401_20250630.csv   # Osaka area, Apr-Jun 2025
+```
+
+**Area-City Mapping:**
+| Area Code | Power Company | Weather Station |
+|-----------|---------------|-----------------|
+| 03 | Tokyo | tokyo |
+| 04 | Chubu | nagoya |
+| 06 | Kansai | osaka |
+
+**Analysis Capabilities:**
+- **Correlation Analysis**: Scatter plots showing relationships between weather and power generation
+- **Weather-Aware Prediction**: ARIMAX models that use temperature, solar radiation, and wind data to improve forecast accuracy
+
+### Performance Notes
+
+- **Statistical methods** (STL, ARIMA, Exponential Smoothing) are lightweight and run instantly on typical datasets
+- **Transformer models** require more computational resources:
+  - Training time: ~30-60 seconds for 1,400 samples (30 epochs, CPU)
+  - Context window: 48 hours (2 days) of historical data
+  - GPU acceleration available with CUDA-enabled PyTorch
 
 ## Quick Start
 
