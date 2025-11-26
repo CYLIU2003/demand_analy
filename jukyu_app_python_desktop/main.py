@@ -110,6 +110,7 @@ class GraphSnapshot:
     settings: Dict[str, Any]
 
 GENERATION_CATEGORIES = {
+    "需要": ["需要実績", "需要", "エリア需要"],
     "原子力": ["原子力"],
     "火力": ["火力(LNG)", "火力(石炭)", "火力(石油)", "火力(その他)", "火力"],
     "水力": ["水力"],
@@ -522,6 +523,10 @@ class GraphCard(QFrame):
         
         return "\n".join(meta)
 
+    def set_plot_title(self, title: str) -> None:
+        """グラフのタイトルを設定"""
+        self.tag_label.setText(title)
+    
     def save_snapshot(self) -> None:
         # グラフを画像として保存
         filename, _ = QFileDialog.getSaveFileName(
@@ -532,7 +537,7 @@ class GraphCard(QFrame):
         )
 
         if filename:
-            self.canvas.fig.savefig(filename, dpi=self.graph_settings['dpi'], bbox_inches='tight')
+            self.canvas.fig.savefig(filename, dpi=self.snapshot.settings.get('dpi', 100), bbox_inches='tight')
             QtWidgets.QMessageBox.information(self, "成功", f"グラフを保存しました:\n{filename}")
 
 class MainWindow(QMainWindow):
@@ -643,6 +648,10 @@ class MainWindow(QMainWindow):
         # 発電種別比較ページ
         comp_page = self.create_comparison_page()
         self.tabs.addTab(comp_page, "⚡ 発電種別比較")
+        
+        # データ比較分析ページ
+        data_compare_page = self.create_data_comparison_page()
+        self.tabs.addTab(data_compare_page, "📈 数値比較分析")
         
         main_layout.addWidget(self.tabs)
         
@@ -2826,7 +2835,7 @@ class MainWindow(QMainWindow):
         self.preview_table.setAlternatingRowColors(True)
         self.preview_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
         self.preview_table.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
-        self.preview_table.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.Stretch)
+        self.preview_table.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.ResizeToContents)
         self.preview_table.verticalHeader().setVisible(False)
         self.preview_table.setStyleSheet(
             """
@@ -3106,7 +3115,7 @@ class MainWindow(QMainWindow):
         self.preview_table.setAlternatingRowColors(True)
         self.preview_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
         self.preview_table.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
-        self.preview_table.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.Stretch)
+        self.preview_table.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.ResizeToContents)
         self.preview_table.verticalHeader().setVisible(False)
         self.preview_table.setStyleSheet(
             """
@@ -3325,8 +3334,10 @@ class MainWindow(QMainWindow):
         card.set_plot_title(title_text)
         self.update_graph_collection_info()
 
-    def remove_graph_card(self, card: GraphCard):
+    def remove_graph_card(self, card):
         # コレクションから指定カードを削除
+        if not isinstance(card, GraphCard):
+            return
         if card in self.graph_collection_widgets:
             self.graph_collection_widgets.remove(card)
         if self.graph_collection_layout is not None:
@@ -4253,8 +4264,15 @@ class MainWindow(QMainWindow):
             QtWidgets.QMessageBox.critical(self, "エラー", f"集計中にエラーが発生しました:\n{str(e)}")
 
     def _aggregate_categories(self, df: pd.DataFrame) -> Dict[str, float]:
-        """DataFrameからカテゴリごとの合計値(MWh)を計算"""
+        """DataFrameからカテゴリごとの合計値(MWh)を計算
+        
+        データは30分間隔のMW平均値なので、各データポイントは0.5時間分の電力を表す。
+        電力量(MWh) = MW × 時間(h) = MW × 0.5h
+        """
         sums = {cat: 0.0 for cat in GENERATION_CATEGORIES.keys()}
+        
+        # データの時間間隔を推定(デフォルトは0.5時間 = 30分)
+        time_interval_hours = 0.5
         
         # 列名のマッピングを確認
         col_map = {}
@@ -4263,8 +4281,6 @@ class MainWindow(QMainWindow):
                 if col in keywords: # 完全一致またはリストに含まれる
                     col_map[col] = cat
                     break
-                # 部分一致も考慮する場合（例: "火力"を含む）
-                # しかしGENERATION_CATEGORIESは具体的な列名をリストしている前提
         
         for col in df.columns:
             # 数値列のみ
@@ -4279,11 +4295,11 @@ class MainWindow(QMainWindow):
                     break
             
             if target_cat:
-                # kWの合計 -> kWh -> /1000 -> MWh
-                # データは1時間ごとの瞬時値(kW)の積算とみなせる（1時間値なら）
-                # 単純合計でkWhになる
-                val = df[col].sum()
-                sums[target_cat] += val / 1000.0 # MWh
+                # MW平均値を電力量(MWh)に変換
+                # 各データポイント: MW × 0.5h = 0.5 MWh
+                # 月間合計: Σ(MW × 0.5h)
+                val = df[col].sum() * time_interval_hours  # MWh
+                sums[target_cat] += val
                 
         return sums
 
@@ -4388,6 +4404,372 @@ class MainWindow(QMainWindow):
         
         self.comp_canvas.fig.tight_layout()
         self.comp_canvas.draw()
+
+    def create_data_comparison_page(self) -> QWidget:
+        """数値比較分析ページを作成"""
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(15)
+
+        # ヘッダー
+        header = QHBoxLayout()
+        title = QLabel("📈 数値比較分析")
+        title.setStyleSheet("font-size: 20px; font-weight: 600; color: #0068B7;")
+        header.addWidget(title)
+        header.addStretch()
+        layout.addLayout(header)
+
+        desc = QLabel("異なる年月・エリア間でのデータを数値で比較します。合計値、平均値、差分、変化率などを自動計算します。")
+        desc.setWordWrap(True)
+        layout.addWidget(desc)
+
+        # 水平分割: 左側に設定、右側に結果表示
+        splitter = QSplitter(Qt.Horizontal)
+        
+        # 左側パネル: 比較設定
+        left_panel = QWidget()
+        left_layout = QVBoxLayout(left_panel)
+        left_layout.setContentsMargins(10, 10, 10, 10)
+        
+        # データ選択グループ1
+        data1_group = QGroupBox("📊 データ1")
+        data1_layout = QGridLayout()
+        data1_layout.addWidget(QLabel("エリア:"), 0, 0)
+        self.cmp_area1_combo = QComboBox()
+        for code, meta in AREA_INFO.items():
+            self.cmp_area1_combo.addItem(f"({code}) {meta.name}", code)
+        data1_layout.addWidget(self.cmp_area1_combo, 0, 1)
+        
+        data1_layout.addWidget(QLabel("年:"), 1, 0)
+        self.cmp_year1_combo = QComboBox()
+        self.cmp_year1_combo.currentIndexChanged.connect(lambda: self.update_cmp_month_combo(1))
+        data1_layout.addWidget(self.cmp_year1_combo, 1, 1)
+        
+        data1_layout.addWidget(QLabel("月:"), 2, 0)
+        self.cmp_month1_combo = QComboBox()
+        data1_layout.addWidget(self.cmp_month1_combo, 2, 1)
+        
+        data1_group.setLayout(data1_layout)
+        left_layout.addWidget(data1_group)
+        
+        # データ選択グループ2
+        data2_group = QGroupBox("📊 データ2")
+        data2_layout = QGridLayout()
+        data2_layout.addWidget(QLabel("エリア:"), 0, 0)
+        self.cmp_area2_combo = QComboBox()
+        for code, meta in AREA_INFO.items():
+            self.cmp_area2_combo.addItem(f"({code}) {meta.name}", code)
+        data2_layout.addWidget(self.cmp_area2_combo, 0, 1)
+        
+        data2_layout.addWidget(QLabel("年:"), 1, 0)
+        self.cmp_year2_combo = QComboBox()
+        self.cmp_year2_combo.currentIndexChanged.connect(lambda: self.update_cmp_month_combo(2))
+        data2_layout.addWidget(self.cmp_year2_combo, 1, 1)
+        
+        data2_layout.addWidget(QLabel("月:"), 2, 0)
+        self.cmp_month2_combo = QComboBox()
+        data2_layout.addWidget(self.cmp_month2_combo, 2, 1)
+        
+        data2_group.setLayout(data2_layout)
+        left_layout.addWidget(data2_group)
+        
+        # 比較項目選択
+        items_group = QGroupBox("比較項目")
+        items_layout = QGridLayout()
+        self.cmp_items_checks = {}
+        categories = list(GENERATION_CATEGORIES.keys())
+        for i, cat in enumerate(categories):
+            chk = QCheckBox(cat)
+            chk.setChecked(True)
+            self.cmp_items_checks[cat] = chk
+            items_layout.addWidget(chk, i // 3, i % 3)  # 3列表示
+        items_group.setLayout(items_layout)
+        left_layout.addWidget(items_group)
+        
+        # 比較実行ボタン
+        compare_btn = QPushButton("🔍 比較を実行")
+        compare_btn.setMinimumHeight(50)
+        compare_btn.setStyleSheet("""
+            QPushButton {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                                          stop:0 #0068B7, stop:1 #005291);
+                color: white;
+                font-size: 16px;
+                font-weight: bold;
+                border-radius: 8px;
+            }
+            QPushButton:hover {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                                          stop:0 #0080e0, stop:1 #0068B7);
+            }
+        """)
+        compare_btn.clicked.connect(self.run_data_comparison)
+        left_layout.addWidget(compare_btn)
+        
+        left_layout.addStretch()
+        
+        # 右側パネル: 結果表示
+        right_panel = QWidget()
+        right_layout = QVBoxLayout(right_panel)
+        right_layout.setContentsMargins(10, 10, 10, 10)
+        
+        result_title = QLabel("比較結果")
+        result_title.setStyleSheet("font-size: 16px; font-weight: 600; color: #0068B7;")
+        right_layout.addWidget(result_title)
+        
+        # 結果テーブル
+        self.cmp_result_table = QTableWidget()
+        self.cmp_result_table.setAlternatingRowColors(True)
+        self.cmp_result_table.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.ResizeToContents)
+        self.cmp_result_table.horizontalHeader().setStretchLastSection(True)
+        self.cmp_result_table.setStyleSheet("""
+            QTableWidget {
+                background-color: #ffffff;
+                alternate-background-color: #f8fafc;
+                border: 2px solid #a0d2ff;
+                border-radius: 8px;
+                font-size: 13px;
+            }
+            QHeaderView::section {
+                background-color: #e6f2ff;
+                color: #0068B7;
+                font-weight: bold;
+                padding: 8px;
+                border: none;
+            }
+        """)
+        right_layout.addWidget(self.cmp_result_table)
+        
+        # エクスポートボタン
+        export_btn = QPushButton("💾 結果をCSVで保存")
+        export_btn.setMinimumHeight(40)
+        export_btn.clicked.connect(self.export_comparison_result)
+        right_layout.addWidget(export_btn)
+        
+        splitter.addWidget(left_panel)
+        splitter.addWidget(right_panel)
+        splitter.setSizes([400, 800])
+        
+        layout.addWidget(splitter)
+        
+        # 初期化
+        self.cmp_area1_combo.currentIndexChanged.connect(lambda: self.update_cmp_years(1))
+        self.cmp_area2_combo.currentIndexChanged.connect(lambda: self.update_cmp_years(2))
+        self.update_cmp_years(1)
+        self.update_cmp_years(2)
+        
+        return page
+
+    def update_cmp_years(self, data_num: int):
+        """比較用の年リストを更新"""
+        if data_num == 1:
+            code = self.cmp_area1_combo.currentData()
+            year_combo = self.cmp_year1_combo
+        else:
+            code = self.cmp_area2_combo.currentData()
+            year_combo = self.cmp_year2_combo
+        
+        if not code:
+            return
+        
+        year_months = self.area_year_months.get(code, [])
+        years = sorted(set([ym[:4] for ym in year_months]))
+        
+        year_combo.blockSignals(True)
+        year_combo.clear()
+        for year in years:
+            year_combo.addItem(f"{year}年", year)
+        year_combo.blockSignals(False)
+        
+        if year_combo.count() > 0:
+            year_combo.setCurrentIndex(0)
+            self.update_cmp_month_combo(data_num)
+
+    def update_cmp_month_combo(self, data_num: int):
+        """比較用の月リストを更新"""
+        if data_num == 1:
+            code = self.cmp_area1_combo.currentData()
+            year = self.cmp_year1_combo.currentData()
+            month_combo = self.cmp_month1_combo
+        else:
+            code = self.cmp_area2_combo.currentData()
+            year = self.cmp_year2_combo.currentData()
+            month_combo = self.cmp_month2_combo
+        
+        if not code or not year:
+            return
+        
+        year_months = self.area_year_months.get(code, [])
+        months = sorted([ym[4:6] for ym in year_months if ym.startswith(year)])
+        
+        month_combo.blockSignals(True)
+        month_combo.clear()
+        for month in months:
+            month_combo.addItem(f"{int(month)}月", month)
+        month_combo.blockSignals(False)
+
+    def run_data_comparison(self):
+        """データ比較を実行"""
+        # データ1の取得
+        code1 = self.cmp_area1_combo.currentData()
+        year1 = self.cmp_year1_combo.currentData()
+        month1 = self.cmp_month1_combo.currentData()
+        
+        # データ2の取得
+        code2 = self.cmp_area2_combo.currentData()
+        year2 = self.cmp_year2_combo.currentData()
+        month2 = self.cmp_month2_combo.currentData()
+        
+        if not all([code1, year1, month1, code2, year2, month2]):
+            QtWidgets.QMessageBox.warning(self, "エラー", "全ての項目を選択してください。")
+            return
+        
+        ym1 = f"{year1}{month1}"
+        ym2 = f"{year2}{month2}"
+        
+        # ファイルの存在確認
+        path1 = DATA_DIR / f"eria_jukyu_{ym1}_{code1}.csv"
+        path2 = DATA_DIR / f"eria_jukyu_{ym2}_{code2}.csv"
+        
+        if not path1.exists():
+            QtWidgets.QMessageBox.warning(self, "エラー", f"データ1のファイルが見つかりません:\n{path1.name}")
+            return
+        
+        if not path2.exists():
+            QtWidgets.QMessageBox.warning(self, "エラー", f"データ2のファイルが見つかりません:\n{path2.name}")
+            return
+        
+        try:
+            # データ読み込み
+            df1, _ = read_csv(path1)
+            df2, _ = read_csv(path2)
+            
+            # 集計
+            sums1 = self._aggregate_categories(df1)
+            sums2 = self._aggregate_categories(df2)
+            
+            # 選択された項目のみフィルタ
+            selected_cats = [cat for cat, chk in self.cmp_items_checks.items() if chk.isChecked()]
+            
+            if not selected_cats:
+                QtWidgets.QMessageBox.warning(self, "エラー", "比較項目を少なくとも1つ選択してください。")
+                return
+            
+            # 結果テーブル作成
+            self.cmp_result_table.setColumnCount(6)
+            self.cmp_result_table.setHorizontalHeaderLabels([
+                "項目", 
+                f"データ1 (MWh)\n{AREA_INFO[code1].name} {year1}/{month1}",
+                f"データ2 (MWh)\n{AREA_INFO[code2].name} {year2}/{month2}",
+                "差分 (MWh)",
+                "変化率 (%)",
+                "データ2/データ1"
+            ])
+            self.cmp_result_table.setRowCount(len(selected_cats) + 1)  # +1 for total
+            
+            total1 = 0
+            total2 = 0
+            
+            for row, cat in enumerate(selected_cats):
+                val1 = sums1.get(cat, 0.0)
+                val2 = sums2.get(cat, 0.0)
+                diff = val2 - val1
+                ratio = ((val2 - val1) / val1 * 100) if val1 != 0 else float('inf')
+                div_ratio = (val2 / val1) if val1 != 0 else float('inf')
+                
+                total1 += val1
+                total2 += val2
+                
+                self.cmp_result_table.setItem(row, 0, QTableWidgetItem(cat))
+                self.cmp_result_table.setItem(row, 1, QTableWidgetItem(f"{val1:,.2f}"))
+                self.cmp_result_table.setItem(row, 2, QTableWidgetItem(f"{val2:,.2f}"))
+                self.cmp_result_table.setItem(row, 3, QTableWidgetItem(f"{diff:+,.2f}"))
+                
+                if ratio == float('inf'):
+                    self.cmp_result_table.setItem(row, 4, QTableWidgetItem("∞"))
+                else:
+                    self.cmp_result_table.setItem(row, 4, QTableWidgetItem(f"{ratio:+.2f}%"))
+                
+                if div_ratio == float('inf'):
+                    self.cmp_result_table.setItem(row, 5, QTableWidgetItem("∞"))
+                else:
+                    self.cmp_result_table.setItem(row, 5, QTableWidgetItem(f"{div_ratio:.3f}"))
+            
+            # 合計行
+            last_row = len(selected_cats)
+            total_diff = total2 - total1
+            total_ratio = ((total2 - total1) / total1 * 100) if total1 != 0 else float('inf')
+            total_div_ratio = (total2 / total1) if total1 != 0 else float('inf')
+            
+            total_item = QTableWidgetItem("合計")
+            total_item.setBackground(QtGui.QColor("#e6f2ff"))
+            total_item.setForeground(QtGui.QColor("#0068B7"))
+            font = total_item.font()
+            font.setBold(True)
+            total_item.setFont(font)
+            self.cmp_result_table.setItem(last_row, 0, total_item)
+            
+            for col, val in enumerate([
+                f"{total1:,.2f}",
+                f"{total2:,.2f}",
+                f"{total_diff:+,.2f}",
+                f"{total_ratio:+.2f}%" if total_ratio != float('inf') else "∞",
+                f"{total_div_ratio:.3f}" if total_div_ratio != float('inf') else "∞"
+            ], start=1):
+                item = QTableWidgetItem(val)
+                item.setBackground(QtGui.QColor("#e6f2ff"))
+                item.setForeground(QtGui.QColor("#0068B7"))
+                item.setFont(font)
+                self.cmp_result_table.setItem(last_row, col, item)
+            
+            self.cmp_result_table.resizeColumnsToContents()
+            
+            QtWidgets.QMessageBox.information(self, "完了", "比較分析が完了しました。")
+            
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            QtWidgets.QMessageBox.critical(self, "エラー", f"比較処理中にエラーが発生しました:\n{str(e)}")
+
+    def export_comparison_result(self):
+        """比較結果をCSVで保存"""
+        if self.cmp_result_table.rowCount() == 0:
+            QtWidgets.QMessageBox.warning(self, "エラー", "保存する結果がありません。先に比較を実行してください。")
+            return
+        
+        filename, _ = QFileDialog.getSaveFileName(
+            self,
+            "比較結果を保存",
+            "",
+            "CSV (*.csv)"
+        )
+        
+        if not filename:
+            return
+        
+        try:
+            with open(filename, 'w', encoding='utf-8-sig', newline='') as f:
+                # ヘッダー
+                headers = []
+                for col in range(self.cmp_result_table.columnCount()):
+                    headers.append(self.cmp_result_table.horizontalHeaderItem(col).text().replace('\n', ' '))
+                f.write(','.join(headers) + '\n')
+                
+                # データ
+                for row in range(self.cmp_result_table.rowCount()):
+                    row_data = []
+                    for col in range(self.cmp_result_table.columnCount()):
+                        item = self.cmp_result_table.item(row, col)
+                        if item:
+                            row_data.append(item.text())
+                        else:
+                            row_data.append('')
+                    f.write(','.join(row_data) + '\n')
+            
+            QtWidgets.QMessageBox.information(self, "成功", f"比較結果を保存しました:\n{filename}")
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(self, "エラー", f"保存中にエラーが発生しました:\n{str(e)}")
 
 def main():
     try:
