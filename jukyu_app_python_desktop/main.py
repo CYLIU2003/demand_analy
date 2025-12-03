@@ -4752,7 +4752,17 @@ class MainWindow(QMainWindow):
             QtWidgets.QMessageBox.warning(self, "警告", "エリアと年月を選択してください。")
             return
         
-        ym = f"{year}{month:02d}"
+        # 型変換（文字列の場合に対応）
+        if isinstance(month, str):
+            month_int = int(month)
+        else:
+            month_int = month
+        if isinstance(year, str):
+            year_int = int(year)
+        else:
+            year_int = year
+        
+        ym = f"{year_int}{month_int:02d}"
         
         # AI分析タブのコンボボックスを同期
         # エリアを設定
@@ -4885,21 +4895,26 @@ class MainWindow(QMainWindow):
                         item = QTableWidgetItem(str(val))
                     self.stats_table.setItem(i, j, item)
             
-            # サマリー
-            total_sum = df[col_name].sum()
-            total_mean = df[col_name].mean()
-            total_min = df[col_name].min()
-            total_max = df[col_name].max()
-            total_count = df[col_name].count()
+            # サマリー（単位付き）
+            # 列名から単位を推測
+            unit = ""
+            if "kW" in col_name or "電力" in col_name or "需要" in col_name or "供給" in col_name:
+                unit = " kW"
+            elif "kWh" in col_name:
+                unit = " kWh"
+            elif "MWh" in col_name:
+                unit = " MWh"
+            elif "%" in col_name or "率" in col_name:
+                unit = " %"
             
             self.stats_summary_label.setText(
                 f"📊 {AREA_INFO[code].name} - {ym[:4]}年{ym[4:6]}月 - {col_name}\n\n"
                 f"【全体統計】\n"
-                f"  • 合計: {total_sum:,.2f}\n"
-                f"  • 平均: {total_mean:,.2f}\n"
-                f"  • 最小: {total_min:,.2f}\n"
-                f"  • 最大: {total_max:,.2f}\n"
-                f"  • データ数: {total_count:,}\n\n"
+                f"  • 合計: {total_sum:,.2f}{unit}\n"
+                f"  • 平均: {total_mean:,.2f}{unit}\n"
+                f"  • 最小: {total_min:,.2f}{unit}\n"
+                f"  • 最大: {total_max:,.2f}{unit}\n"
+                f"  • データ数: {total_count:,} 件\n\n"
                 f"集計期間: {period} ({len(grouped)}区間)"
             )
             

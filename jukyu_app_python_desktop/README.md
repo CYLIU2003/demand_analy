@@ -1,113 +1,184 @@
-# PySide6 Demand Viewer
+# 電力需給分析ツール
 
-This desktop client offers a richer, highly interactive experience for analysing Japanese electricity supply-demand CSVs. It is built with PySide6 and Matplotlib, featuring multi-series plotting, fine-grained chart styling, and export utilities.
+日本の電力需給データ（CSV）を分析・可視化するデスクトップアプリケーションです。  
+PySide6とMatplotlibを使用し、グラフ表示、統計分析、AI予測機能を提供します。
 
-## Highlights
+---
 
-- Tabbed UI separating the availability dashboard, advanced analysis tools, generation comparison, and an AI lab.
-- Multi-select column list with "select all" helpers to quickly build comparison charts.
-- Customisable chart settings (title, axes labels, line width, figure size, font sizes, grid and legend toggles).
-- **Display toggle checkboxes** for title, axis labels, and legend visibility.
-- Integrated Matplotlib canvas with image export shortcut.
-- Resilient CSV loader that tries Shift_JIS/CP932/UTF-8 encodings and auto-detects datetime columns.
-- **Generation type comparison** with area-to-area and month-to-month analysis modes.
-- **Statistical aggregation** (hourly/daily/weekly/monthly) with clipboard export for PowerPoint.
-- Experimental transformer forecaster that turns CSVs into machine-learning ready datasets and produces multi-step predictions.
-- **Weather data integration** with ARIMAX model forecasting.
+## 📋 主な機能
 
-## Requirements
+### 🏠 メインタブ
+- **エリア選択**: 北海道から沖縄まで10電力エリアに対応
+- **データ有無確認**: ヒートマップでデータの存在を視覚的に確認
+- **年月選択**: 年と月を個別のプルダウンで選択
 
-- Python 3.10 or later (tested with CPython 3.11.9).
-- PySide6 6.7.2, pandas 2.2.3, numpy 2.1.3, matplotlib 3.9.2, scikit-learn 1.5.2, torch 2.4.1. Install via the provided `requirements.txt`.
-- ⚠️ **Note**: Python 3.14 is NOT compatible with PySide6 6.7.2.
+### 📊 詳細分析タブ
+- **複数系列グラフ**: 需要、供給、発電種別など複数の列を同時にグラフ化
+- **グラフ設定**: タイトル、軸ラベル、凡例、線幅、フォントサイズなど細かく調整可能
+- **表示オプション**: タイトル・軸ラベル・凡例の表示/非表示を切り替え（プレゼン用）
+- **画像保存**: グラフをPNG形式で保存
 
-## Installation & Launch
+### ⚡ 発電種別比較タブ
+- **エリア間比較**: 同一年月で複数エリアの発電構成を比較
+- **月間推移比較**: 1年間の発電種別推移を確認
+- **グラフ形式**: 積み上げ棒グラフ、円グラフを選択可能
+- **数値データ**: テーブルで詳細数値を確認
+- **コピー機能**: Excel/PowerPointに貼り付け可能な形式でコピー
+
+### 🤖 AI分析タブ
+- **統計集計**: 時間別/日別/週別/月別で合計・平均・最小・最大を計算（単位付き表示）
+- **Transformer予測**: 機械学習による電力需要予測
+- **ARIMAX予測**: 気象データを考慮した統計予測（天気データが必要）
+- **データエクスポート**: 分析結果をCSVで出力
+
+---
+
+## 💻 動作環境
+
+- **Python**: 3.10〜3.12（3.11推奨）
+  - ⚠️ Python 3.14は非対応（PySide6が未対応）
+- **OS**: Windows 10/11, macOS, Linux
+
+### 必要なライブラリ
+```
+PySide6==6.7.2
+pandas==2.2.3
+numpy==2.1.3
+matplotlib==3.9.2
+scikit-learn==1.5.2
+torch==2.4.1
+statsmodels==0.14.4
+```
+
+---
+
+## 🚀 インストール方法
+
+### 方法1: バッチファイルで起動（Windows・推奨）
+
+1. `電力需給分析ツール.bat` をダブルクリック
+2. 初回は自動で仮想環境が作成されます（数分かかります）
+3. 2回目以降は自動で仮想環境を検知して起動します
+
+### 方法2: 手動でセットアップ
 
 ```powershell
-# From jukyu_app_python_desktop/
+# フォルダに移動
+cd jukyu_app_python_desktop
+
+# 仮想環境を作成
 python -m venv .venv
+
+# 仮想環境を有効化（Windows）
 .\.venv\Scripts\activate
+
+# 必要なライブラリをインストール
 pip install -r requirements.txt
+
+# アプリを起動
 python main.py
 ```
 
-### Auto-launch with Virtual Environment
-
-Use the provided launcher script that automatically creates/detects a virtual environment:
-
-```powershell
-python run.py
+macOS/Linuxの場合:
+```bash
+source .venv/bin/activate
 ```
 
-Or double-click `電力需給分析ツール.bat` on Windows.
+---
 
-The virtual environment is created at `%USERPROFILE%\.demand_analy` to avoid path conflicts.
+## 📁 データの配置
 
-On macOS/Linux replace the activation command with `source .venv/bin/activate`.
+### CSVファイル
+- `data/` フォルダに配置
+- ファイル名形式: `eria_jukyu_YYYYMM_AA.csv`
+  - `YYYYMM`: 年月（例: 202504）
+  - `AA`: エリアコード（01〜10）
+- 文字コード: Shift_JIS/CP932（UTF-8も対応）
 
-### Data Placement
+### エリアコード一覧
+| コード | エリア |
+|--------|--------|
+| 01 | 北海道 |
+| 02 | 東北 |
+| 03 | 東京 |
+| 04 | 中部 |
+| 05 | 北陸 |
+| 06 | 関西 |
+| 07 | 中国 |
+| 08 | 四国 |
+| 09 | 九州 |
+| 10 | 沖縄 |
 
-- Place CSVs under `jukyu_app_python_desktop/data/`.
-- File naming pattern: `eria_jukyu_YYYYMM_AA.csv` where `AA` is the two-digit area code.
-- Encoding: Shift_JIS/CP932 recommended; UTF-8 is accepted.
-- The loader skips a leading unit description row if present.
-- **Weather data** (optional): Place weather CSVs under `data/weather/` for ARIMAX forecasting.
+### 天気データ（任意）
+- `data/weather/` フォルダに配置
+- ARIMAX予測機能で使用
 
-### Usage Flow
+---
 
-1. Choose an area on the **メイン** tab and review the heatmap for missing months.
-2. Switch to **詳細分析** and pick a month (`YYYYMM`) as well as an optional single day filter.
-3. Select the generation categories you want to plot (use the "全選択" / "全解除" shortcuts for bulk actions).
-4. Adjust chart settings (title, labels, grid, legend, line width, figure size, etc.).
-5. Use **display toggle checkboxes** to show/hide title, axis labels, and legend for presentation-ready charts.
-6. Click **📈 グラフ更新** to render the Matplotlib chart, then **💾 グラフを保存** to export as PNG.
+## 📖 使い方
 
-### 📊 Generation Comparison
+### 基本的な流れ
 
-1. Open the **発電種別比較** tab.
-2. Choose comparison mode: **エリア間比較** (compare areas) or **月間推移** (monthly trends).
-3. Select areas using checkboxes and generation categories to include.
-4. Toggle between **電力量** (absolute) and **構成比** (percentage) views.
-5. Switch to **📋 数値データ** tab to view the raw numbers.
-6. Click **📋 数値をコピー** to copy data to clipboard for Excel/PowerPoint.
+1. **メインタブ** でエリアと年月を選択
+2. **詳細分析タブ** で表示したい列を選択してグラフを描画
+3. 必要に応じて **発電種別比較** でエリア間・月間の比較
+4. **AI分析タブ** で統計集計や予測を実行
 
-### 📈 Statistical Aggregation
+### 統計集計の使い方
 
-1. On the **メイン** tab, click **📊 統計分析に移行** to transfer your selection to the AI analysis tab.
-2. Navigate to the **統計集計** sub-tab within AI分析.
-3. Select aggregation period: 時間別/日別/週別/月別/全期間.
-4. Click **集計実行** to calculate sum, mean, min, max statistics.
-5. Click **📋 クリップボードにコピー** to export for presentations.
+1. メインタブで「📊 統計分析に移行」ボタンをクリック
+2. AI分析タブの「統計集計」サブタブに移動
+3. 対象列と集計期間を選択
+4. 「集計実行」をクリック
+5. 結果には単位（kW、kWhなど）が自動で付与されます
+6. 「📋 クリップボードにコピー」でExcel/PowerPointに貼り付け可能
 
-### 🤖 AI Lab Workflow
+### グラフのカスタマイズ
 
-1. Open the **AI分析** tab and choose the area/year-month combination you wish to analyse.
-2. Select a numeric column (e.g., 総需要, 系統出力) as the forecasting target and click **📚 データ要約** to review the latest context window.
-3. Adjust the transformer hyperparameters (context length, prediction horizon, epochs, batch size, learning rate) to match your research design.
-4. Click **🤖 Transformer学習＆予測** to train the lightweight PyTorch model and generate forward predictions; training/validation losses and the resulting trajectory are shown in the log and table.
-5. Use **🌤️ ARIMAX予測** for weather-integrated forecasting (requires weather data in `data/weather/`).
-6. Export the CSV or tweak parameters iteratively to compare baselines and transformer-driven forecasts.
+- **表示オプション**: タイトル、X軸ラベル、Y軸ラベル、凡例の表示/非表示を切り替え
+- **スタイル設定**: 線幅、フォントサイズ、図の大きさを調整
+- **保存**: 「💾 グラフを保存」でPNG形式で保存
 
-## Packaging (Optional)
+---
 
-```powershell
-pip install pyinstaller
-pyinstaller -F -w main.py
+## 🔧 トラブルシューティング
+
+### 「PySide6がインストールできない」
+→ Python 3.14を使用している可能性があります。Python 3.11.xをインストールしてください。
+
+### 「日本語が文字化けする」
+→ MS Gothic、Yu Gothic、Meiryoなどの日本語フォントがインストールされているか確認してください。
+
+### 「CSVが読み込めない」
+→ ファイル名が `eria_jukyu_YYYYMM_AA.csv` の形式になっているか確認してください。
+
+### 「グラフが遅い」
+→ 選択する列数を減らすか、データをダウンサンプリングしてください。
+
+---
+
+## 📂 ファイル構成
+
+```
+jukyu_app_python_desktop/
+├── main.py                    # メインアプリケーション
+├── run.py                     # ランチャー（自動環境検知）
+├── requirements.txt           # 依存ライブラリ一覧
+├── 電力需給分析ツール.bat      # Windows用起動バッチ
+├── README.md                  # このファイル
+├── data/                      # 電力需給CSVデータ
+│   └── weather/               # 天気データ（任意）
+└── ml/                        # 機械学習モジュール
 ```
 
-Depending on the target OS, you may need additional PySide6 deployment steps (e.g., `--add-data` for Qt plugins).
+---
 
-## Troubleshooting
+## 🔄 更新履歴
 
-- **Missing fonts/garbled Japanese**: ensure MS Gothic, Yu Gothic, or Meiryo fonts are installed; the app falls back to DejaVu Sans.
-- **CSV fails to load**: verify the filename matches the expected pattern and that the selected area corresponds to the area code in the file.
-- **Slow plotting with many columns**: reduce the number of selected series or down-sample the CSV before loading.
-- **Python 3.14 errors**: Downgrade to Python 3.11.x which is fully compatible with PySide6.
-
-## Key Files
-
-- `main.py`: application entry point containing the Qt widgets and plotting logic.
-- `run.py`: launcher script with automatic virtual environment detection.
-- `requirements.txt`: locked dependency versions.
-- `data/`: sample CSVs for April 2024 through October 2025 in various areas.
-- `data/weather/`: weather data for ARIMAX forecasting (optional).
+### 2024年12月
+- グラフ表示オプション（タイトル・軸ラベル・凡例の表示切替）追加
+- 統計集計機能（時間別/日別/週別/月別）追加 ※単位自動付与
+- 発電種別比較に数値データタブとコピー機能追加
+- メインタブから統計分析タブへのデータ移行機能追加
+- 仮想環境自動検知ランチャー追加
+- README日本語化
