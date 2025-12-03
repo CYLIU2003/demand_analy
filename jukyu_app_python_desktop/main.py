@@ -109,6 +109,7 @@ class GraphSnapshot:
     columns: List[str]
     settings: Dict[str, Any]
 
+# 発電種別カテゴリ（比較タブ用）
 GENERATION_CATEGORIES = {
     "原子力": ["原子力"],
     "火力": ["火力(LNG)", "火力(石炭)", "火力(石油)", "火力(その他)", "火力"],
@@ -118,6 +119,14 @@ GENERATION_CATEGORIES = {
     "太陽光": ["太陽光発電実績", "太陽光"],
     "風力": ["風力発電実績", "風力"],
     "揚水": ["揚水"],
+}
+
+# 需給実績カテゴリ（比較タブ用）
+DEMAND_SUPPLY_CATEGORIES = {
+    "エリア需要": ["エリア需要"],
+    "エリア供給": ["供給力合計", "エリア供給"],
+    "連系線": ["連系線"],
+    "揚水動力": ["揚水動力"],
 }
 
 def scan_files() -> List[DataFileEntry]:
@@ -265,8 +274,12 @@ def read_weather_csv(path: Path) -> pd.DataFrame:
     }
     
     try:
-        # Shift_JISで読み込み、最初の4行をスキップ
-        df = pd.read_csv(path, encoding="shift_jis", skiprows=4, engine="python")
+        # CP932で読み込み、最初の4行をスキップ（shift_jisより広い文字セット）
+        try:
+            df = pd.read_csv(path, encoding="cp932", skiprows=4, engine="python")
+        except UnicodeDecodeError:
+            # フォールバック: UTF-8を試す
+            df = pd.read_csv(path, encoding="utf-8", skiprows=4, engine="python")
         
         # 最初の列が日時
         datetime_col = df.columns[0]
@@ -1026,133 +1039,169 @@ class MainWindow(QMainWindow):
         widget = QWidget()
         layout = QVBoxLayout(widget)
         layout.setContentsMargins(10, 10, 10, 10)
-        layout.setSpacing(10)
+        layout.setSpacing(8)
         
         # 説明
         desc = QLabel("需要や発電量が高い日・低い日の天候情報と曜日を分析します。")
         desc.setStyleSheet("color: #666; font-size: 12px;")
         layout.addWidget(desc)
         
-        # コントロール行
-        control_layout = QHBoxLayout()
-        
-        control_layout.addWidget(QLabel("分析対象:"))
+        # コントロール行1
+        control_layout1 = QHBoxLayout()
+        control_layout1.addWidget(QLabel("分析対象:"))
         self.dw_column_combo = QComboBox()
-        self.dw_column_combo.setMinimumWidth(200)
-        control_layout.addWidget(self.dw_column_combo)
+        self.dw_column_combo.setMinimumWidth(180)
+        control_layout1.addWidget(self.dw_column_combo)
         
-        control_layout.addWidget(QLabel("上位/下位:"))
+        control_layout1.addWidget(QLabel("上位/下位:"))
         self.dw_top_n_spin = QSpinBox()
         self.dw_top_n_spin.setRange(5, 50)
         self.dw_top_n_spin.setValue(10)
         self.dw_top_n_spin.setSuffix(" 日")
-        control_layout.addWidget(self.dw_top_n_spin)
+        control_layout1.addWidget(self.dw_top_n_spin)
         
-        control_layout.addWidget(QLabel("集計単位:"))
+        control_layout1.addWidget(QLabel("分析単位:"))
+        self.dw_time_unit_combo = QComboBox()
+        self.dw_time_unit_combo.addItems(["日別", "時別"])
+        self.dw_time_unit_combo.setToolTip("日別: 1日の値で分析\n時別: 時間帯ごとの値で分析")
+        control_layout1.addWidget(self.dw_time_unit_combo)
+        
+        control_layout1.addWidget(QLabel("集計:"))
         self.dw_agg_combo = QComboBox()
-        self.dw_agg_combo.addItems(["日別平均", "日別合計", "日別最大"])
-        control_layout.addWidget(self.dw_agg_combo)
+        self.dw_agg_combo.addItems(["平均", "合計", "最大"])
+        control_layout1.addWidget(self.dw_agg_combo)
         
         analyze_btn = QPushButton("🔍 分析実行")
-        analyze_btn.setMinimumHeight(36)
+        analyze_btn.setMinimumHeight(32)
         analyze_btn.setStyleSheet("""
             QPushButton {
                 background-color: #0068B7;
                 color: white;
                 font-weight: bold;
                 border-radius: 5px;
-                padding: 0 20px;
+                padding: 0 15px;
             }
             QPushButton:hover {
                 background-color: #005999;
             }
         """)
         analyze_btn.clicked.connect(self.run_demand_weather_analysis)
-        control_layout.addWidget(analyze_btn)
+        control_layout1.addWidget(analyze_btn)
         
         copy_btn = QPushButton("📋 コピー")
-        copy_btn.setMinimumHeight(36)
+        copy_btn.setMinimumHeight(32)
         copy_btn.clicked.connect(self.copy_demand_weather_result)
-        control_layout.addWidget(copy_btn)
+        control_layout1.addWidget(copy_btn)
         
-        control_layout.addStretch()
-        layout.addLayout(control_layout)
+        control_layout1.addStretch()
+        layout.addLayout(control_layout1)
         
-        # 結果表示（スプリッター）
-        splitter = QSplitter(Qt.Horizontal)
+        # メインスプリッター（縦分割）
+        main_splitter = QSplitter(Qt.Vertical)
+        
+        # 上部: テーブル用スプリッター（横分割）
+        table_splitter = QSplitter(Qt.Horizontal)
         
         # 左側: 高い日テーブル
         high_frame = QFrame()
         high_layout = QVBoxLayout(high_frame)
-        high_layout.setContentsMargins(5, 5, 5, 5)
+        high_layout.setContentsMargins(3, 3, 3, 3)
+        high_layout.setSpacing(3)
         high_label = QLabel("📈 高い日 TOP N")
-        high_label.setStyleSheet("font-weight: bold; color: #dc2626;")
+        high_label.setStyleSheet("font-weight: bold; color: #dc2626; font-size: 11px;")
         high_layout.addWidget(high_label)
         
         self.dw_high_table = QTableWidget()
         self.dw_high_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
         self.dw_high_table.setAlternatingRowColors(True)
+        self.dw_high_table.setMinimumHeight(150)
         self.dw_high_table.setStyleSheet("""
             QTableWidget {
                 background-color: #fff5f5;
                 alternate-background-color: #fef2f2;
                 border: 1px solid #fecaca;
+                font-size: 11px;
             }
             QHeaderView::section {
                 background-color: #fecaca;
                 color: #991b1b;
-                padding: 6px;
+                padding: 4px;
                 border: 1px solid #f87171;
                 font-weight: 600;
+                font-size: 10px;
             }
         """)
         high_layout.addWidget(self.dw_high_table)
-        splitter.addWidget(high_frame)
+        table_splitter.addWidget(high_frame)
         
         # 右側: 低い日テーブル
         low_frame = QFrame()
         low_layout = QVBoxLayout(low_frame)
-        low_layout.setContentsMargins(5, 5, 5, 5)
+        low_layout.setContentsMargins(3, 3, 3, 3)
+        low_layout.setSpacing(3)
         low_label = QLabel("📉 低い日 TOP N")
-        low_label.setStyleSheet("font-weight: bold; color: #2563eb;")
+        low_label.setStyleSheet("font-weight: bold; color: #2563eb; font-size: 11px;")
         low_layout.addWidget(low_label)
         
         self.dw_low_table = QTableWidget()
         self.dw_low_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
         self.dw_low_table.setAlternatingRowColors(True)
+        self.dw_low_table.setMinimumHeight(150)
         self.dw_low_table.setStyleSheet("""
             QTableWidget {
                 background-color: #eff6ff;
                 alternate-background-color: #dbeafe;
                 border: 1px solid #bfdbfe;
+                font-size: 11px;
             }
             QHeaderView::section {
                 background-color: #bfdbfe;
                 color: #1e40af;
-                padding: 6px;
+                padding: 4px;
                 border: 1px solid #60a5fa;
                 font-weight: 600;
+                font-size: 10px;
             }
         """)
         low_layout.addWidget(self.dw_low_table)
-        splitter.addWidget(low_frame)
+        table_splitter.addWidget(low_frame)
         
-        layout.addWidget(splitter, stretch=1)
+        # テーブルスプリッターを等分割
+        table_splitter.setSizes([500, 500])
+        main_splitter.addWidget(table_splitter)
         
-        # サマリー
-        self.dw_summary_label = QLabel("")
+        # 下部: サマリー（スクロール可能）
+        summary_scroll = QtWidgets.QScrollArea()
+        summary_scroll.setWidgetResizable(True)
+        summary_scroll.setMinimumHeight(100)
+        summary_scroll.setMaximumHeight(200)
+        
+        self.dw_summary_label = QLabel("分析を実行してください")
         self.dw_summary_label.setWordWrap(True)
+        self.dw_summary_label.setAlignment(Qt.AlignTop | Qt.AlignLeft)
         self.dw_summary_label.setStyleSheet("""
             QLabel {
                 background-color: #fefce8;
-                border: 1px solid #fde047;
-                border-radius: 8px;
-                padding: 15px;
-                font-size: 12px;
+                border: none;
+                padding: 10px;
+                font-size: 11px;
                 color: #713f12;
             }
         """)
-        layout.addWidget(self.dw_summary_label)
+        summary_scroll.setWidget(self.dw_summary_label)
+        summary_scroll.setStyleSheet("""
+            QScrollArea {
+                border: 1px solid #fde047;
+                border-radius: 6px;
+                background-color: #fefce8;
+            }
+        """)
+        main_splitter.addWidget(summary_scroll)
+        
+        # スプリッターの初期サイズ設定
+        main_splitter.setSizes([400, 150])
+        
+        layout.addWidget(main_splitter, stretch=1)
         
         return widget
 
@@ -1708,13 +1757,8 @@ class MainWindow(QMainWindow):
                 self.ai_column_combo.addItem(col)
             self.ai_column_combo.blockSignals(False)
             
-            # 需要・天候分析の列コンボも更新
-            if hasattr(self, "dw_column_combo"):
-                self.dw_column_combo.blockSignals(True)
-                self.dw_column_combo.clear()
-                for col in numeric_columns:
-                    self.dw_column_combo.addItem(col)
-                self.dw_column_combo.blockSignals(False)
+            # 需要・天候分析の列コンボを更新（積算列も含む）
+            self._update_dw_columns()
             
             self.ai_dataframe = df
             self.ai_time_column = time_col
@@ -4424,6 +4468,17 @@ class MainWindow(QMainWindow):
             self.comp_cat_checks[cat] = chk
             cat_layout.addWidget(chk, i // 4, i % 4)
         controls_layout.addWidget(cat_group)
+        
+        # 需給実績選択
+        demand_group = QGroupBox("需給実績選択")
+        demand_layout = QGridLayout(demand_group)
+        self.comp_demand_checks = {}
+        for i, cat in enumerate(DEMAND_SUPPLY_CATEGORIES.keys()):
+            chk = QCheckBox(cat)
+            chk.setChecked(False)  # デフォルトはオフ
+            self.comp_demand_checks[cat] = chk
+            demand_layout.addWidget(chk, i // 4, i % 4)
+        controls_layout.addWidget(demand_group)
 
         # 実行ボタン
         btn = QPushButton("集計・グラフ表示")
@@ -4549,10 +4604,13 @@ class MainWindow(QMainWindow):
         is_ratio = self.comp_unit_ratio.isChecked()
         graph_type = self.comp_graph_type_combo.currentIndex() # 0: Bar, 1: Pie
         
-        # 選択されたカテゴリを取得
-        selected_cats = [cat for cat, chk in self.comp_cat_checks.items() if chk.isChecked()]
+        # 選択されたカテゴリを取得（発電種別＋需給実績）
+        selected_gen_cats = [cat for cat, chk in self.comp_cat_checks.items() if chk.isChecked()]
+        selected_demand_cats = [cat for cat, chk in self.comp_demand_checks.items() if chk.isChecked()]
+        selected_cats = selected_gen_cats + selected_demand_cats
+        
         if not selected_cats:
-            QtWidgets.QMessageBox.warning(self, "警告", "少なくとも1つの発電種別を選択してください。")
+            QtWidgets.QMessageBox.warning(self, "警告", "少なくとも1つの項目を選択してください。")
             return
 
         data_map = {} # Key: Label (Area or Month), Value: Dict[Category, Amount]
@@ -4581,7 +4639,7 @@ class MainWindow(QMainWindow):
                 
                 for _, code, path in target_files:
                     df, _ = read_csv(path)
-                    sums = self._aggregate_categories(df)
+                    sums = self._aggregate_categories(df, selected_gen_cats, selected_demand_cats)
                     
                     # Calculate Grand Total (sum of all categories, not just selected)
                     grand_total = sum(sums.values())
@@ -4614,7 +4672,7 @@ class MainWindow(QMainWindow):
                     
                     if path:
                         df, _ = read_csv(path)
-                        sums = self._aggregate_categories(df)
+                        sums = self._aggregate_categories(df, selected_gen_cats, selected_demand_cats)
                         grand_total = sum(sums.values())
                         filtered_sums = {k: v for k, v in sums.items() if k in selected_cats}
                         data_map[month_label] = filtered_sums
@@ -4641,46 +4699,51 @@ class MainWindow(QMainWindow):
             traceback.print_exc()
             QtWidgets.QMessageBox.critical(self, "エラー", f"集計中にエラーが発生しました:\n{str(e)}")
 
-    def _aggregate_categories(self, df: pd.DataFrame) -> Dict[str, float]:
+    def _aggregate_categories(self, df: pd.DataFrame, 
+                               selected_gen_cats: List[str] = None,
+                               selected_demand_cats: List[str] = None) -> Dict[str, float]:
         """DataFrameからカテゴリごとの合計値(MWh)を計算"""
-        sums = {cat: 0.0 for cat in GENERATION_CATEGORIES.keys()}
+        if selected_gen_cats is None:
+            selected_gen_cats = list(GENERATION_CATEGORIES.keys())
+        if selected_demand_cats is None:
+            selected_demand_cats = []
         
-        # 列名のマッピングを確認
-        col_map = {}
-        for col in df.columns:
-            for cat, keywords in GENERATION_CATEGORIES.items():
-                if col in keywords: # 完全一致またはリストに含まれる
-                    col_map[col] = cat
-                    break
-                # 部分一致も考慮する場合（例: "火力"を含む）
-                # しかしGENERATION_CATEGORIESは具体的な列名をリストしている前提
+        # 発電種別の集計
+        sums = {cat: 0.0 for cat in selected_gen_cats}
         
         for col in df.columns:
             # 数値列のみ
             if not pd.api.types.is_numeric_dtype(df[col]):
                 continue
                 
-            # カテゴリ判定
-            target_cat = None
-            for cat, keywords in GENERATION_CATEGORIES.items():
+            # カテゴリ判定（発電種別）
+            for cat in selected_gen_cats:
+                keywords = GENERATION_CATEGORIES.get(cat, [])
                 if col in keywords:
-                    target_cat = cat
+                    val = df[col].sum()
+                    sums[cat] += val / 1000.0  # MWh
                     break
-            
-            if target_cat:
-                # kWの合計 -> kWh -> /1000 -> MWh
-                # データは1時間ごとの瞬時値(kW)の積算とみなせる（1時間値なら）
-                # 単純合計でkWhになる
-                val = df[col].sum()
-                sums[target_cat] += val / 1000.0 # MWh
+        
+        # 需給実績の集計
+        for cat in selected_demand_cats:
+            keywords = DEMAND_SUPPLY_CATEGORIES.get(cat, [])
+            sums[cat] = 0.0
+            for col in df.columns:
+                if not pd.api.types.is_numeric_dtype(df[col]):
+                    continue
+                if col in keywords:
+                    val = df[col].sum()
+                    sums[cat] += val / 1000.0  # MWh
+                    break
                 
         return sums
 
     def _plot_comparison(self, data_map: Dict[str, Dict[str, float]], labels: List[str], is_ratio: bool, mode: int, graph_type: int, selected_cats: List[str], totals_map: Dict[str, float] = None) -> None:
         self.comp_canvas.ax.clear()
         
-        # 色定義
+        # 色定義（発電種別＋需給実績）
         colors = {
+            # 発電種別
             "原子力": "#8b5cf6", # 紫
             "火力": "#ef4444",   # 赤
             "水力": "#3b82f6",   # 青
@@ -4689,6 +4752,11 @@ class MainWindow(QMainWindow):
             "太陽光": "#f59e0b", # 黄色
             "風力": "#06b6d4",   # シアン
             "揚水": "#6366f1",   # インディゴ
+            # 需給実績
+            "エリア需要": "#dc2626",   # 赤
+            "エリア供給": "#059669",   # 緑
+            "連系線": "#7c3aed",       # 紫
+            "揚水動力": "#0891b2",     # シアン
         }
         
         if graph_type == 1: # 円グラフ (合計)
@@ -4998,6 +5066,73 @@ class MainWindow(QMainWindow):
                     self.stats_column_combo.addItem(col)
         except Exception:
             pass
+    
+    def _update_dw_columns(self) -> None:
+        """需要・天候分析の列コンボボックスを更新（積算列も追加）"""
+        if not hasattr(self, "dw_column_combo"):
+            return
+        
+        self.dw_column_combo.clear()
+        
+        code = self.ai_area_combo.currentData()
+        year = self.ai_year_combo.currentData()
+        month = self.ai_month_combo.currentData()
+        
+        if not code or not year or not month:
+            return
+        
+        # 型変換
+        if isinstance(month, str):
+            month = int(month)
+        if isinstance(year, str):
+            year = int(year)
+        
+        ym = f"{year}{month:02d}"
+        path = DATA_DIR / f"eria_jukyu_{ym}_{code}.csv"
+        if not path.exists():
+            return
+        
+        try:
+            df, time_col = read_csv(path)
+            
+            # 時間列をパース
+            if time_col and time_col in df.columns:
+                df["_datetime"] = pd.to_datetime(df[time_col], errors="coerce")
+            else:
+                df["_datetime"] = pd.to_datetime(df.index)
+            
+            df["_date"] = df["_datetime"].dt.date
+            
+            # 数値列を取得
+            numeric_cols = []
+            for col in df.columns:
+                if col.startswith("_"):
+                    continue
+                if pd.api.types.is_numeric_dtype(df[col]):
+                    numeric_cols.append(col)
+            
+            # 通常の数値列を追加
+            for col in numeric_cols:
+                self.dw_column_combo.addItem(col)
+            
+            # 積算列を追加（日別合計として計算可能な列）
+            self.dw_column_combo.insertSeparator(len(numeric_cols))
+            for col in numeric_cols:
+                # 30分値/1時間値として積算可能な列を追加
+                self.dw_column_combo.addItem(f"[積算] {col}")
+        
+        except Exception:
+            pass
+            return
+        
+        try:
+            df, _ = read_csv(path)
+            # 数値列のみをリストに追加
+            for col in df.columns:
+                if pd.api.types.is_numeric_dtype(df[col]):
+                    self.stats_column_combo.addItem(col)
+        except Exception:
+            pass
 
     def run_stats_summary(self) -> None:
         """統計集計を実行"""
@@ -5170,17 +5305,30 @@ class MainWindow(QMainWindow):
         )
 
     def run_demand_weather_analysis(self) -> None:
-        """需要・天候分析を実行"""
+        """需要・天候分析を実行（日別/時別対応）"""
         code = self.ai_area_combo.currentData()
         year = self.ai_year_combo.currentData()
         month = self.ai_month_combo.currentData()
-        col_name = self.dw_column_combo.currentText()
+        col_name_raw = self.dw_column_combo.currentText()
         top_n = self.dw_top_n_spin.value()
-        agg_method = self.dw_agg_combo.currentText()
+        agg_method = self.dw_agg_combo.currentText()  # 平均, 合計, 最大
+        time_unit = self.dw_time_unit_combo.currentText()  # 日別, 時別
         
-        if not code or not year or not month or not col_name:
+        if not code or not year or not month or not col_name_raw:
             QtWidgets.QMessageBox.warning(self, "警告", "エリア、年月、分析対象を選択してください。")
             return
+        
+        # 積算列かどうか判定
+        is_cumulative = col_name_raw.startswith("[積算] ")
+        if is_cumulative:
+            col_name = col_name_raw.replace("[積算] ", "")
+            # 積算の場合は日別合計を強制
+            effective_agg = "合計"
+            display_col_name = f"{col_name}（積算）"
+        else:
+            col_name = col_name_raw
+            effective_agg = agg_method
+            display_col_name = col_name
         
         # 型変換
         if isinstance(month, str):
@@ -5212,142 +5360,133 @@ class MainWindow(QMainWindow):
                 df["_datetime"] = pd.to_datetime(df.index)
             
             df["_date"] = df["_datetime"].dt.date
+            df["_hour"] = df["_datetime"].dt.hour
             df["_weekday"] = df["_datetime"].dt.dayofweek  # 0=月曜, 6=日曜
             
             # 曜日名
             weekday_names = ["月", "火", "水", "木", "金", "土", "日"]
             
-            # 日別集計
-            if agg_method == "日別平均":
-                daily = df.groupby("_date")[col_name].mean().reset_index()
-                daily.columns = ["date", "value"]
-            elif agg_method == "日別合計":
-                daily = df.groupby("_date")[col_name].sum().reset_index()
-                daily.columns = ["date", "value"]
-            else:  # 日別最大
-                daily = df.groupby("_date")[col_name].max().reset_index()
-                daily.columns = ["date", "value"]
-            
-            daily["date"] = pd.to_datetime(daily["date"])
-            daily["weekday"] = daily["date"].dt.dayofweek
-            daily["weekday_name"] = daily["weekday"].apply(lambda x: weekday_names[x])
-            
             # 天候データ読み込み
             weather_file = find_weather_file(code, ym)
             weather_df = None
             has_weather = False
-            has_weather_name = False  # 天気名があるかどうか
+            has_weather_name = False
             
             if weather_file:
                 try:
                     weather_df = read_weather_csv(weather_file)
                     weather_df["_date"] = weather_df["datetime"].dt.date
-                    
-                    # 集計する列を定義
-                    agg_dict = {
-                        "temperature": "mean",
-                        "precipitation": "sum",
-                        "sunlight": "sum",
-                        "wind_speed": "mean"
-                    }
-                    
-                    # 天気コードがあれば最頻値を取得
-                    if "weather_code" in weather_df.columns:
-                        has_weather_name = True
-                        # 各日の最頻天気を取得
-                        def get_mode_weather(group):
-                            if "weather" in group.columns and len(group["weather"].dropna()) > 0:
-                                return group["weather"].mode().iloc[0] if len(group["weather"].mode()) > 0 else ""
-                            return ""
-                        
-                        weather_mode = weather_df.groupby("_date").apply(get_mode_weather).reset_index()
-                        weather_mode.columns = ["date", "天気"]
-                        weather_mode["date"] = pd.to_datetime(weather_mode["date"])
-                    
-                    # 日別に集計（平均気温、合計降水量、合計日照）
-                    weather_daily = weather_df.groupby("_date").agg(agg_dict).reset_index()
-                    weather_daily.columns = ["date", "気温(℃)", "降水量(mm)", "日照時間(h)", "風速(m/s)"]
-                    weather_daily["date"] = pd.to_datetime(weather_daily["date"])
-                    
-                    # 天気を結合
-                    if has_weather_name:
-                        weather_daily = weather_daily.merge(weather_mode, on="date", how="left")
-                    
-                    # 結合
-                    daily = daily.merge(weather_daily, on="date", how="left")
+                    weather_df["_hour"] = weather_df["datetime"].dt.hour
                     has_weather = True
+                    has_weather_name = "weather" in weather_df.columns
                 except Exception as e:
                     import traceback
                     traceback.print_exc()
                     print(f"天候データ読み込みエラー: {e}")
             
-            # 上位N日と下位N日を取得
-            daily_sorted = daily.sort_values("value", ascending=False)
-            top_days = daily_sorted.head(top_n).copy()
-            bottom_days = daily_sorted.tail(top_n).copy()
+            if time_unit == "日別":
+                # 日別分析（積算の場合は合計を使用）
+                result_df = self._analyze_daily(df, col_name, effective_agg, weekday_names, 
+                                                  weather_df, has_weather, has_weather_name)
+                unit_label = "日"
+            else:
+                # 時別分析
+                result_df = self._analyze_hourly(df, col_name, effective_agg, weekday_names,
+                                                   weather_df, has_weather, has_weather_name)
+                unit_label = "時間帯"
+            
+            # 上位Nと下位Nを取得
+            sorted_df = result_df.sort_values("value", ascending=False)
+            top_records = sorted_df.head(top_n).copy()
+            bottom_records = sorted_df.tail(top_n).copy()
             
             # テーブル更新
-            self._update_demand_weather_table(self.dw_high_table, top_days, has_weather)
-            self._update_demand_weather_table(self.dw_low_table, bottom_days, has_weather)
+            self._update_demand_weather_table(self.dw_high_table, top_records, has_weather, time_unit)
+            self._update_demand_weather_table(self.dw_low_table, bottom_records, has_weather, time_unit)
             
             # サマリー作成
             summary_lines = []
-            summary_lines.append(f"📊 分析対象: {AREA_INFO[code].name} - {year}年{month}月 - {col_name}")
-            summary_lines.append(f"集計方法: {agg_method}")
+            summary_lines.append(f"📊 分析対象: {AREA_INFO[code].name} - {year}年{month}月 - {display_col_name}")
+            if is_cumulative:
+                summary_lines.append(f"分析単位: {time_unit}  ※積算値（日別合計）で分析")
+            else:
+                summary_lines.append(f"分析単位: {time_unit}  集計方法: {agg_method}")
             summary_lines.append("")
             
             # 曜日分布
-            top_weekday_counts = top_days["weekday_name"].value_counts()
-            bottom_weekday_counts = bottom_days["weekday_name"].value_counts()
+            top_weekday_counts = top_records["weekday_name"].value_counts()
+            bottom_weekday_counts = bottom_records["weekday_name"].value_counts()
             
-            summary_lines.append("【高い日の曜日分布】")
+            summary_lines.append(f"【高い{unit_label}の曜日分布】")
             for wd in weekday_names:
                 count = top_weekday_counts.get(wd, 0)
-                summary_lines.append(f"  {wd}曜: {'■' * count} ({count}日)")
+                summary_lines.append(f"  {wd}曜: {'■' * count} ({count})")
             
             summary_lines.append("")
-            summary_lines.append("【低い日の曜日分布】")
+            summary_lines.append(f"【低い{unit_label}の曜日分布】")
             for wd in weekday_names:
                 count = bottom_weekday_counts.get(wd, 0)
-                summary_lines.append(f"  {wd}曜: {'■' * count} ({count}日)")
+                summary_lines.append(f"  {wd}曜: {'■' * count} ({count})")
+            
+            # 時別の場合は時間帯分布も追加
+            if time_unit == "時別" and "hour" in top_records.columns:
+                summary_lines.append("")
+                summary_lines.append("【高い時間帯の分布】")
+                top_hour_counts = top_records["hour"].value_counts().sort_index()
+                for hour, count in top_hour_counts.items():
+                    summary_lines.append(f"  {hour:02d}時: {'■' * count} ({count})")
+                
+                summary_lines.append("")
+                summary_lines.append("【低い時間帯の分布】")
+                bottom_hour_counts = bottom_records["hour"].value_counts().sort_index()
+                for hour, count in bottom_hour_counts.items():
+                    summary_lines.append(f"  {hour:02d}時: {'■' * count} ({count})")
             
             if has_weather:
                 summary_lines.append("")
                 summary_lines.append("【天候傾向】")
                 
-                # 高い日の天候
-                high_temp = top_days["気温(℃)"].mean()
-                high_precip = top_days["降水量(mm)"].mean()
-                low_temp = bottom_days["気温(℃)"].mean()
-                low_precip = bottom_days["降水量(mm)"].mean()
+                # 高い/低いの天候比較
+                high_temp = top_records["気温(℃)"].mean() if "気温(℃)" in top_records.columns else float("nan")
+                low_temp = bottom_records["気温(℃)"].mean() if "気温(℃)" in bottom_records.columns else float("nan")
+                high_precip = top_records["降水量(mm)"].mean() if "降水量(mm)" in top_records.columns else float("nan")
+                low_precip = bottom_records["降水量(mm)"].mean() if "降水量(mm)" in bottom_records.columns else float("nan")
                 
-                summary_lines.append(f"  高い日: 平均気温 {high_temp:.1f}℃, 平均降水量 {high_precip:.1f}mm")
-                summary_lines.append(f"  低い日: 平均気温 {low_temp:.1f}℃, 平均降水量 {low_precip:.1f}mm")
-                
-                temp_diff = high_temp - low_temp
-                if abs(temp_diff) > 2:
-                    if temp_diff > 0:
-                        summary_lines.append(f"  → 高い日は気温が高い傾向（{temp_diff:+.1f}℃）")
-                    else:
-                        summary_lines.append(f"  → 高い日は気温が低い傾向（{temp_diff:+.1f}℃）")
+                if pd.notna(high_temp) and pd.notna(low_temp):
+                    summary_lines.append(f"  高い{unit_label}: 平均気温 {high_temp:.1f}℃, 平均降水量 {high_precip:.1f}mm")
+                    summary_lines.append(f"  低い{unit_label}: 平均気温 {low_temp:.1f}℃, 平均降水量 {low_precip:.1f}mm")
+                    
+                    temp_diff = high_temp - low_temp
+                    if abs(temp_diff) > 2:
+                        if temp_diff > 0:
+                            summary_lines.append(f"  → 高い{unit_label}は気温が高い傾向（{temp_diff:+.1f}℃）")
+                        else:
+                            summary_lines.append(f"  → 高い{unit_label}は気温が低い傾向（{temp_diff:+.1f}℃）")
                 
                 # 天気の分布（天気名がある場合）
-                if "天気" in top_days.columns:
+                if "天気" in top_records.columns:
                     summary_lines.append("")
                     summary_lines.append("【天気分布】")
                     
-                    high_weather = top_days["天気"].value_counts()
-                    low_weather = bottom_days["天気"].value_counts()
+                    # NaNを除外してカウント
+                    high_weather = top_records["天気"].dropna()
+                    high_weather = high_weather[high_weather != ""]
+                    low_weather = bottom_records["天気"].dropna()
+                    low_weather = low_weather[low_weather != ""]
                     
-                    summary_lines.append("  高い日の天気:")
-                    for weather, count in high_weather.head(5).items():
-                        if pd.notna(weather) and weather:
-                            summary_lines.append(f"    {weather}: {count}日")
+                    if len(high_weather) > 0:
+                        high_weather_counts = high_weather.value_counts()
+                        summary_lines.append(f"  高い{unit_label}の天気:")
+                        for weather, count in high_weather_counts.head(5).items():
+                            pct = count / len(high_weather) * 100
+                            summary_lines.append(f"    {weather}: {count} ({pct:.0f}%)")
                     
-                    summary_lines.append("  低い日の天気:")
-                    for weather, count in low_weather.head(5).items():
-                        if pd.notna(weather) and weather:
-                            summary_lines.append(f"    {weather}: {count}日")
+                    if len(low_weather) > 0:
+                        low_weather_counts = low_weather.value_counts()
+                        summary_lines.append(f"  低い{unit_label}の天気:")
+                        for weather, count in low_weather_counts.head(5).items():
+                            pct = count / len(low_weather) * 100
+                            summary_lines.append(f"    {weather}: {count} ({pct:.0f}%)")
             else:
                 summary_lines.append("")
                 summary_lines.append("※天候データが見つかりませんでした")
@@ -5355,27 +5494,121 @@ class MainWindow(QMainWindow):
             self.dw_summary_label.setText("\n".join(summary_lines))
             
             # 結果保存
-            self._dw_top_days = top_days
-            self._dw_bottom_days = bottom_days
+            self._dw_top_records = top_records
+            self._dw_bottom_records = bottom_records
             self._dw_has_weather = has_weather
+            self._dw_time_unit = time_unit
             
         except Exception as e:
             import traceback
             traceback.print_exc()
             QtWidgets.QMessageBox.critical(self, "エラー", f"分析中にエラーが発生しました:\n{str(e)}")
+    
+    def _analyze_daily(self, df: pd.DataFrame, col_name: str, agg_method: str, 
+                       weekday_names: list, weather_df: pd.DataFrame, 
+                       has_weather: bool, has_weather_name: bool) -> pd.DataFrame:
+        """日別分析"""
+        # 日別集計
+        if agg_method == "平均":
+            daily = df.groupby("_date")[col_name].mean().reset_index()
+        elif agg_method == "合計":
+            daily = df.groupby("_date")[col_name].sum().reset_index()
+        else:  # 最大
+            daily = df.groupby("_date")[col_name].max().reset_index()
+        
+        daily.columns = ["date", "value"]
+        daily["date"] = pd.to_datetime(daily["date"])
+        daily["weekday"] = daily["date"].dt.dayofweek
+        daily["weekday_name"] = daily["weekday"].apply(lambda x: weekday_names[x])
+        
+        if has_weather and weather_df is not None:
+            # 天候を日別に集計
+            agg_dict = {
+                "temperature": "mean",
+                "precipitation": "sum",
+                "sunlight": "sum",
+                "wind_speed": "mean"
+            }
+            
+            weather_daily = weather_df.groupby("_date").agg(agg_dict).reset_index()
+            weather_daily.columns = ["date", "気温(℃)", "降水量(mm)", "日照時間(h)", "風速(m/s)"]
+            weather_daily["date"] = pd.to_datetime(weather_daily["date"])
+            
+            # 天気の最頻値を取得
+            if has_weather_name:
+                def get_mode_weather(group):
+                    weather_vals = group["weather"].dropna()
+                    weather_vals = weather_vals[weather_vals != ""]
+                    if len(weather_vals) > 0:
+                        return weather_vals.mode().iloc[0] if len(weather_vals.mode()) > 0 else ""
+                    return ""
+                
+                weather_mode = weather_df.groupby("_date").apply(
+                    get_mode_weather, include_groups=False
+                ).reset_index()
+                weather_mode.columns = ["date", "天気"]
+                weather_mode["date"] = pd.to_datetime(weather_mode["date"])
+                weather_daily = weather_daily.merge(weather_mode, on="date", how="left")
+            
+            daily = daily.merge(weather_daily, on="date", how="left")
+        
+        return daily
+    
+    def _analyze_hourly(self, df: pd.DataFrame, col_name: str, agg_method: str,
+                        weekday_names: list, weather_df: pd.DataFrame,
+                        has_weather: bool, has_weather_name: bool) -> pd.DataFrame:
+        """時別分析（各日・各時間帯の値を分析）"""
+        # 日時をキーとして各行を保持
+        hourly = df[["_datetime", "_date", "_hour", "_weekday", col_name]].copy()
+        hourly.columns = ["datetime", "date", "hour", "weekday", "value"]
+        hourly["date"] = pd.to_datetime(hourly["date"])
+        hourly["weekday_name"] = hourly["weekday"].apply(lambda x: weekday_names[x])
+        
+        # NaNを除外
+        hourly = hourly.dropna(subset=["value"])
+        
+        if has_weather and weather_df is not None:
+            # 時間単位で天候データを結合
+            weather_hourly = weather_df[["datetime", "_date", "_hour", "temperature", 
+                                         "precipitation", "sunlight", "wind_speed"]].copy()
+            if has_weather_name:
+                weather_hourly["天気"] = weather_df["weather"]
+            
+            weather_hourly.columns = ["w_datetime", "w_date", "w_hour", "気温(℃)", 
+                                      "降水量(mm)", "日照時間(h)", "風速(m/s)"] + (["天気"] if has_weather_name else [])
+            
+            # 日付と時間でマッチング
+            hourly["_merge_key"] = hourly["date"].astype(str) + "_" + hourly["hour"].astype(str)
+            weather_hourly["_merge_key"] = pd.to_datetime(weather_hourly["w_date"]).astype(str) + "_" + weather_hourly["w_hour"].astype(str)
+            
+            # 天候データから不要列を削除
+            weather_hourly = weather_hourly.drop(columns=["w_datetime", "w_date", "w_hour"])
+            weather_hourly = weather_hourly.drop_duplicates(subset=["_merge_key"])
+            
+            hourly = hourly.merge(weather_hourly, on="_merge_key", how="left")
+            hourly = hourly.drop(columns=["_merge_key"])
+        
+        return hourly
 
-    def _update_demand_weather_table(self, table: QTableWidget, df: pd.DataFrame, has_weather: bool) -> None:
-        """需要・天候テーブルを更新"""
-        # 天気列があるかチェック
+    def _update_demand_weather_table(self, table: QTableWidget, df: pd.DataFrame, 
+                                      has_weather: bool, time_unit: str = "日別") -> None:
+        """需要・天候テーブルを更新（日別/時別対応）"""
         has_weather_name = "天気" in df.columns
+        is_hourly = time_unit == "時別"
+        has_hour = "hour" in df.columns
+        
+        # カラム構築
+        columns = []
+        if is_hourly and has_hour:
+            columns = ["日時", "時", "曜日", "値"]
+        else:
+            columns = ["日付", "曜日", "値"]
         
         if has_weather:
             if has_weather_name:
-                columns = ["日付", "曜日", "値", "天気", "気温(℃)", "降水量(mm)", "日照(h)", "風速(m/s)"]
+                columns.extend(["天気", "気温(℃)", "降水量", "日照", "風速"])
             else:
-                columns = ["日付", "曜日", "値", "気温(℃)", "降水量(mm)", "日照(h)", "風速(m/s)"]
-        else:
-            columns = ["日付", "曜日", "値"]
+                columns.extend(["気温(℃)", "降水量", "日照", "風速"])
         
         table.clear()
         table.setRowCount(len(df))
@@ -5384,8 +5617,20 @@ class MainWindow(QMainWindow):
         
         for i, (_, row) in enumerate(df.iterrows()):
             col_idx = 0
-            table.setItem(i, col_idx, QTableWidgetItem(row["date"].strftime("%Y-%m-%d")))
-            col_idx += 1
+            
+            if is_hourly and has_hour:
+                # 時別: 日時、時、曜日、値
+                date_str = row["date"].strftime("%m/%d") if hasattr(row["date"], "strftime") else str(row["date"])[:10]
+                table.setItem(i, col_idx, QTableWidgetItem(date_str))
+                col_idx += 1
+                table.setItem(i, col_idx, QTableWidgetItem(f"{int(row['hour']):02d}"))
+                col_idx += 1
+            else:
+                # 日別: 日付、曜日、値
+                date_str = row["date"].strftime("%Y-%m-%d") if hasattr(row["date"], "strftime") else str(row["date"])[:10]
+                table.setItem(i, col_idx, QTableWidgetItem(date_str))
+                col_idx += 1
+            
             table.setItem(i, col_idx, QTableWidgetItem(row["weekday_name"]))
             col_idx += 1
             table.setItem(i, col_idx, QTableWidgetItem(f"{row['value']:,.2f}"))
@@ -5414,29 +5659,44 @@ class MainWindow(QMainWindow):
 
     def copy_demand_weather_result(self) -> None:
         """需要・天候分析結果をコピー"""
-        if not hasattr(self, "_dw_top_days") or self._dw_top_days is None:
+        if not hasattr(self, "_dw_top_records") or self._dw_top_records is None:
             QtWidgets.QMessageBox.warning(self, "警告", "先に分析を実行してください。")
             return
         
         lines = []
         has_weather = self._dw_has_weather
-        has_weather_name = "天気" in self._dw_top_days.columns
+        has_weather_name = "天気" in self._dw_top_records.columns
+        time_unit = getattr(self, "_dw_time_unit", "日別")
+        is_hourly = time_unit == "時別"
+        has_hour = "hour" in self._dw_top_records.columns
         
         # ヘッダー作成
+        if is_hourly and has_hour:
+            header_parts = ["日付", "時", "曜日", "値"]
+        else:
+            header_parts = ["日付", "曜日", "値"]
+        
         if has_weather:
             if has_weather_name:
-                header = "日付\t曜日\t値\t天気\t気温(℃)\t降水量(mm)\t日照(h)\t風速(m/s)"
+                header_parts.extend(["天気", "気温(℃)", "降水量(mm)", "日照(h)", "風速(m/s)"])
             else:
-                header = "日付\t曜日\t値\t気温(℃)\t降水量(mm)\t日照(h)\t風速(m/s)"
-        else:
-            header = "日付\t曜日\t値"
+                header_parts.extend(["気温(℃)", "降水量(mm)", "日照(h)", "風速(m/s)"])
         
-        # 高い日
-        lines.append("【高い日】")
+        header = "\t".join(header_parts)
+        unit_label = "時間帯" if is_hourly else "日"
+        
+        # 高い日/時間帯
+        lines.append(f"【高い{unit_label}】")
         lines.append(header)
         
-        for _, row in self._dw_top_days.iterrows():
-            line = [row["date"].strftime("%Y-%m-%d"), row["weekday_name"], f"{row['value']:.2f}"]
+        for _, row in self._dw_top_records.iterrows():
+            date_str = row["date"].strftime("%Y-%m-%d") if hasattr(row["date"], "strftime") else str(row["date"])[:10]
+            
+            if is_hourly and has_hour:
+                line = [date_str, f"{int(row['hour']):02d}", row["weekday_name"], f"{row['value']:.2f}"]
+            else:
+                line = [date_str, row["weekday_name"], f"{row['value']:.2f}"]
+            
             if has_weather:
                 if has_weather_name:
                     weather = row.get('天気', '')
@@ -5450,11 +5710,17 @@ class MainWindow(QMainWindow):
             lines.append("\t".join(line))
         
         lines.append("")
-        lines.append("【低い日】")
+        lines.append(f"【低い{unit_label}】")
         lines.append(header)
         
-        for _, row in self._dw_bottom_days.iterrows():
-            line = [row["date"].strftime("%Y-%m-%d"), row["weekday_name"], f"{row['value']:.2f}"]
+        for _, row in self._dw_bottom_records.iterrows():
+            date_str = row["date"].strftime("%Y-%m-%d") if hasattr(row["date"], "strftime") else str(row["date"])[:10]
+            
+            if is_hourly and has_hour:
+                line = [date_str, f"{int(row['hour']):02d}", row["weekday_name"], f"{row['value']:.2f}"]
+            else:
+                line = [date_str, row["weekday_name"], f"{row['value']:.2f}"]
+            
             if has_weather:
                 if has_weather_name:
                     weather = row.get('天気', '')
