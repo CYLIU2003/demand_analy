@@ -4895,6 +4895,13 @@ class MainWindow(QMainWindow):
                         item = QTableWidgetItem(str(val))
                     self.stats_table.setItem(i, j, item)
             
+            # 全体統計を計算
+            total_sum = df[col_name].sum()
+            total_mean = df[col_name].mean()
+            total_min = df[col_name].min()
+            total_max = df[col_name].max()
+            total_count = df[col_name].count()
+            
             # サマリー（単位付き）
             # 列名から単位を推測
             unit = ""
