@@ -4903,27 +4903,57 @@ class MainWindow(QMainWindow):
             total_count = df[col_name].count()
             
             # サマリー（単位付き）
-            # 列名から単位を推測
-            unit = ""
-            if "kW" in col_name or "電力" in col_name or "需要" in col_name or "供給" in col_name:
-                unit = " kW"
-            elif "kWh" in col_name:
+            # 列名から単位を推測（データは瞬時値[MW]が基本）
+            # 瞬時値の場合、合計は意味がないため電力量に換算する
+            unit = " MW"  # デフォルトはMW（瞬時値）
+            is_instantaneous = True  # 瞬時値フラグ
+            
+            if "kWh" in col_name or "電力量" in col_name:
                 unit = " kWh"
+                is_instantaneous = False
             elif "MWh" in col_name:
                 unit = " MWh"
+                is_instantaneous = False
             elif "%" in col_name or "率" in col_name:
                 unit = " %"
+                is_instantaneous = False
+            elif "kW" in col_name:
+                unit = " kW"
             
-            self.stats_summary_label.setText(
-                f"📊 {AREA_INFO[code].name} - {ym[:4]}年{ym[4:6]}月 - {col_name}\n\n"
-                f"【全体統計】\n"
-                f"  • 合計: {total_sum:,.2f}{unit}\n"
-                f"  • 平均: {total_mean:,.2f}{unit}\n"
-                f"  • 最小: {total_min:,.2f}{unit}\n"
-                f"  • 最大: {total_max:,.2f}{unit}\n"
-                f"  • データ数: {total_count:,} 件\n\n"
-                f"集計期間: {period} ({len(grouped)}区間)"
-            )
+            # データ間隔を推定（30分 = 0.5時間）
+            interval_hours = 0.5
+            if len(df) >= 2 and "_datetime" in df.columns:
+                time_diff = df["_datetime"].diff().median()
+                if pd.notna(time_diff):
+                    interval_hours = time_diff.total_seconds() / 3600
+            
+            if is_instantaneous:
+                # 瞬時値の場合、電力量を概算
+                energy_sum = total_sum * interval_hours  # MW × 時間 = MWh
+                energy_unit = " MWh" if "MW" in unit or unit == " MW" else " kWh"
+                
+                self.stats_summary_label.setText(
+                    f"📊 {AREA_INFO[code].name} - {ym[:4]}年{ym[4:6]}月 - {col_name}\n\n"
+                    f"【全体統計】※データは瞬時値（{unit.strip()}）\n"
+                    f"  • 積算電力量（概算）: {energy_sum:,.2f}{energy_unit}\n"
+                    f"    （{interval_hours}時間間隔 × {total_count:,}件で計算）\n"
+                    f"  • 平均: {total_mean:,.2f}{unit}\n"
+                    f"  • 最小: {total_min:,.2f}{unit}\n"
+                    f"  • 最大: {total_max:,.2f}{unit}\n"
+                    f"  • データ数: {total_count:,} 件\n\n"
+                    f"集計期間: {period} ({len(grouped)}区間)"
+                )
+            else:
+                self.stats_summary_label.setText(
+                    f"📊 {AREA_INFO[code].name} - {ym[:4]}年{ym[4:6]}月 - {col_name}\n\n"
+                    f"【全体統計】\n"
+                    f"  • 合計: {total_sum:,.2f}{unit}\n"
+                    f"  • 平均: {total_mean:,.2f}{unit}\n"
+                    f"  • 最小: {total_min:,.2f}{unit}\n"
+                    f"  • 最大: {total_max:,.2f}{unit}\n"
+                    f"  • データ数: {total_count:,} 件\n\n"
+                    f"集計期間: {period} ({len(grouped)}区間)"
+                )
             
             # 保存用にデータを保持
             self._stats_result = grouped
