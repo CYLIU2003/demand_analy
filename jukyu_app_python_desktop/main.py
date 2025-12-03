@@ -577,6 +577,10 @@ class MainWindow(QMainWindow):
             "figsize_h": 6,
             "dpi": 100,
             "detailed_ticks": False,
+            "show_title": True,
+            "show_xlabel": True,
+            "show_ylabel": True,
+            "show_legend": True,
         }
         
         # グラフコレクション
@@ -908,9 +912,86 @@ class MainWindow(QMainWindow):
         self.ai_weather_canvas = MplCanvas(width=12, height=6)
         self.ai_tabs.addTab(self.ai_weather_canvas, "天候分析")
         
+        # 統計集計タブ
+        stats_widget = self._create_stats_summary_widget()
+        self.ai_tabs.addTab(stats_widget, "📊 統計集計")
+        
         layout.addWidget(self.ai_tabs)
         
         return page
+    
+    def _create_stats_summary_widget(self) -> QWidget:
+        """統計集計ウィジェットを作成"""
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(10)
+        
+        # コントロール行
+        control_layout = QHBoxLayout()
+        
+        control_layout.addWidget(QLabel("集計期間:"))
+        self.stats_period_combo = QComboBox()
+        self.stats_period_combo.addItems(["時間別", "日別", "週別", "月別"])
+        self.stats_period_combo.setMinimumWidth(100)
+        control_layout.addWidget(self.stats_period_combo)
+        
+        control_layout.addWidget(QLabel("対象列:"))
+        self.stats_column_combo = QComboBox()
+        self.stats_column_combo.setMinimumWidth(200)
+        control_layout.addWidget(self.stats_column_combo)
+        
+        calc_btn = QPushButton("集計実行")
+        calc_btn.setMinimumHeight(32)
+        calc_btn.clicked.connect(self.run_stats_summary)
+        control_layout.addWidget(calc_btn)
+        
+        export_btn = QPushButton("📋 クリップボードにコピー")
+        export_btn.setMinimumHeight(32)
+        export_btn.clicked.connect(self.copy_stats_to_clipboard)
+        control_layout.addWidget(export_btn)
+        
+        control_layout.addStretch()
+        layout.addLayout(control_layout)
+        
+        # 結果表示テーブル
+        self.stats_table = QTableWidget()
+        self.stats_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+        self.stats_table.setAlternatingRowColors(True)
+        self.stats_table.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.Stretch)
+        self.stats_table.setStyleSheet("""
+            QTableWidget {
+                background-color: #ffffff;
+                alternate-background-color: #f8fafc;
+                border: 1px solid #e2e8f0;
+                font-size: 12px;
+            }
+            QHeaderView::section {
+                background-color: #e6f2ff;
+                color: #0068B7;
+                padding: 8px;
+                border: 1px solid #a0d2ff;
+                font-weight: 600;
+            }
+        """)
+        layout.addWidget(self.stats_table)
+        
+        # サマリー表示
+        self.stats_summary_label = QLabel("")
+        self.stats_summary_label.setWordWrap(True)
+        self.stats_summary_label.setStyleSheet("""
+            QLabel {
+                background-color: #f0f9ff;
+                border: 1px solid #bae6fd;
+                border-radius: 8px;
+                padding: 15px;
+                font-size: 13px;
+                color: #0c4a6e;
+            }
+        """)
+        layout.addWidget(self.stats_summary_label)
+        
+        return widget
 
     def create_availability_page(self) -> QWidget:
         """データ可用性確認ページを作成"""
@@ -2643,6 +2724,24 @@ class MainWindow(QMainWindow):
         self.add_to_collection_btn.clicked.connect(self.add_graph_to_collection)
         layout.addWidget(self.add_to_collection_btn)
 
+        # 統計分析タブへデータを移行するボタン
+        self.transfer_to_analysis_btn = QPushButton("📈 統計分析タブで分析")
+        self.transfer_to_analysis_btn.setMinimumHeight(40)
+        self.transfer_to_analysis_btn.setStyleSheet("""
+            QPushButton {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                                          stop:0 #8b5cf6, stop:1 #7c3aed);
+                color: white;
+                font-weight: 600;
+            }
+            QPushButton:hover {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                                          stop:0 #a78bfa, stop:1 #8b5cf6);
+            }
+        """)
+        self.transfer_to_analysis_btn.clicked.connect(self.transfer_to_analysis_tab)
+        layout.addWidget(self.transfer_to_analysis_btn)
+
         layout.addStretch()
         return panel
     
@@ -2748,19 +2847,43 @@ class MainWindow(QMainWindow):
 
         options_group = QGroupBox("表示オプション")
         options_layout = QVBoxLayout()
+        
+        # タイトル表示
+        self.show_title_check = QCheckBox("タイトルを表示")
+        self.show_title_check.setChecked(self.graph_settings.get("show_title", True))
+        self.show_title_check.toggled.connect(lambda: self.update_setting("show_title", self.show_title_check.isChecked()))
+        options_layout.addWidget(self.show_title_check)
+        
+        # X軸ラベル表示
+        self.show_xlabel_check = QCheckBox("X軸ラベルを表示")
+        self.show_xlabel_check.setChecked(self.graph_settings.get("show_xlabel", True))
+        self.show_xlabel_check.toggled.connect(lambda: self.update_setting("show_xlabel", self.show_xlabel_check.isChecked()))
+        options_layout.addWidget(self.show_xlabel_check)
+        
+        # Y軸ラベル表示
+        self.show_ylabel_check = QCheckBox("Y軸ラベルを表示")
+        self.show_ylabel_check.setChecked(self.graph_settings.get("show_ylabel", True))
+        self.show_ylabel_check.toggled.connect(lambda: self.update_setting("show_ylabel", self.show_ylabel_check.isChecked()))
+        options_layout.addWidget(self.show_ylabel_check)
+        
+        # グリッド表示
         self.grid_check = QCheckBox("グリッドを表示")
         self.grid_check.setChecked(self.graph_settings["grid"])
         self.grid_check.toggled.connect(lambda: self.update_setting("grid", self.grid_check.isChecked()))
-        self.legend_check = QCheckBox("凡例を表示")
-        self.legend_check.setChecked(self.graph_settings["legend"])
-        self.legend_check.toggled.connect(lambda: self.update_setting("legend", self.legend_check.isChecked()))
+        options_layout.addWidget(self.grid_check)
+        
+        # 凡例表示
+        self.show_legend_check = QCheckBox("凡例を表示")
+        self.show_legend_check.setChecked(self.graph_settings.get("show_legend", True))
+        self.show_legend_check.toggled.connect(lambda: self.update_setting("show_legend", self.show_legend_check.isChecked()))
+        options_layout.addWidget(self.show_legend_check)
+        self.legend_check = self.show_legend_check  # 後方互換
+        
+        # 詳細目盛り
         self.detailed_ticks_check = QCheckBox("軸の目盛りを細かく表示")
         self.detailed_ticks_check.setChecked(self.graph_settings.get("detailed_ticks", False))
         self.detailed_ticks_check.setToolTip("拡大表示時に軸の目盛りをより細かく表示します")
         self.detailed_ticks_check.toggled.connect(lambda: self.update_setting("detailed_ticks", self.detailed_ticks_check.isChecked()))
-        options_layout.addWidget(self.grid_check)
-        options_layout.addWidget(self.legend_check)
-        options_layout.addWidget(self.detailed_ticks_check)
         legend_row = QHBoxLayout()
         legend_row.addWidget(QLabel("凡例の位置:"))
         self.legend_loc_combo = QComboBox()
@@ -3862,12 +3985,16 @@ class MainWindow(QMainWindow):
                         linewidth=settings["linewidth"],
                         alpha=0.9,
                     )
-            canvas.ax.set_xlabel(
-                settings["xlabel"],
-                color="#2d3748",
-                fontsize=settings["label_size"],
-                fontweight="bold",
-            )
+            # X軸ラベル
+            if settings.get("show_xlabel", True):
+                canvas.ax.set_xlabel(
+                    settings["xlabel"],
+                    color="#2d3748",
+                    fontsize=settings["label_size"],
+                    fontweight="bold",
+                )
+            else:
+                canvas.ax.set_xlabel("")
             canvas.fig.autofmt_xdate(rotation=45)
         else:
             x_axis = range(len(df_filtered))
@@ -3881,21 +4008,30 @@ class MainWindow(QMainWindow):
                         linewidth=settings["linewidth"],
                         alpha=0.9,
                     )
-            canvas.ax.set_xlabel(
-                settings["xlabel"],
+            # X軸ラベル
+            if settings.get("show_xlabel", True):
+                canvas.ax.set_xlabel(
+                    settings["xlabel"],
+                    color="#2d3748",
+                    fontsize=settings["label_size"],
+                    fontweight="bold",
+                )
+            else:
+                canvas.ax.set_xlabel("")
+
+        # Y軸ラベル
+        if settings.get("show_ylabel", True):
+            canvas.ax.set_ylabel(
+                settings["ylabel"],
                 color="#2d3748",
                 fontsize=settings["label_size"],
                 fontweight="bold",
             )
+        else:
+            canvas.ax.set_ylabel("")
 
-        canvas.ax.set_ylabel(
-            settings["ylabel"],
-            color="#2d3748",
-            fontsize=settings["label_size"],
-            fontweight="bold",
-        )
-
-        if settings["legend"]:
+        # 凡例
+        if settings.get("show_legend", True) and settings["legend"]:
             canvas.ax.legend(
                 loc=settings["legend_loc"],
                 facecolor="#ffffff",
@@ -3905,6 +4041,7 @@ class MainWindow(QMainWindow):
                 framealpha=0.95,
             )
 
+        # タイトル
         if settings["title"]:
             title_text = settings["title"]
         else:
@@ -3913,13 +4050,16 @@ class MainWindow(QMainWindow):
                 date_obj = pd.to_datetime(selected_date)
                 title_text += f" ({date_obj.strftime('%m月%d日')})"
 
-        canvas.ax.set_title(
-            title_text,
-            color="#0068B7",
-            fontsize=settings["title_size"],
-            fontweight="bold",
-            pad=15,
-        )
+        if settings.get("show_title", True):
+            canvas.ax.set_title(
+                title_text,
+                color="#0068B7",
+                fontsize=settings["title_size"],
+                fontweight="bold",
+                pad=15,
+            )
+        else:
+            canvas.ax.set_title("")
 
         if settings["grid"]:
             canvas.ax.grid(True, alpha=0.3, color="#cbd5e0", linestyle="--", linewidth=0.8)
@@ -4131,11 +4271,78 @@ class MainWindow(QMainWindow):
         btn.clicked.connect(self.run_comparison_analysis)
         controls_layout.addWidget(btn)
         
+        # 統計データコピーボタン
+        copy_btn = QPushButton("📋 数値をコピー")
+        copy_btn.setMinimumHeight(40)
+        copy_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #10b981;
+                color: white;
+                font-weight: bold;
+                border-radius: 5px;
+                padding: 0 15px;
+            }
+            QPushButton:hover {
+                background-color: #059669;
+            }
+        """)
+        copy_btn.clicked.connect(self.copy_comparison_data)
+        controls_layout.addWidget(copy_btn)
+        
         layout.addWidget(controls_frame)
 
-        # グラフキャンバス
+        # 結果表示エリア（タブ形式）
+        self.comp_tabs = QTabWidget()
+        self.comp_tabs.setStyleSheet("""
+            QTabWidget::pane {
+                border: 2px solid #a0d2ff;
+                border-radius: 8px;
+                background-color: white;
+            }
+            QTabBar::tab {
+                background: #f0f0f0;
+                padding: 8px 16px;
+                margin-right: 2px;
+            }
+            QTabBar::tab:selected {
+                background: #0068B7;
+                color: white;
+            }
+        """)
+        
+        # グラフタブ
+        graph_widget = QWidget()
+        graph_layout = QVBoxLayout(graph_widget)
         self.comp_canvas = MplCanvas(width=12, height=8)
-        layout.addWidget(self.comp_canvas, stretch=1)
+        graph_layout.addWidget(self.comp_canvas)
+        self.comp_tabs.addTab(graph_widget, "📊 グラフ")
+        
+        # 数値データタブ
+        table_widget = QWidget()
+        table_layout = QVBoxLayout(table_widget)
+        self.comp_data_table = QTableWidget()
+        self.comp_data_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+        self.comp_data_table.setAlternatingRowColors(True)
+        self.comp_data_table.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.Stretch)
+        self.comp_data_table.setStyleSheet("""
+            QTableWidget {
+                background-color: #ffffff;
+                alternate-background-color: #f8fafc;
+                border: 1px solid #e2e8f0;
+                font-size: 12px;
+            }
+            QHeaderView::section {
+                background-color: #e6f2ff;
+                color: #0068B7;
+                padding: 8px;
+                border: 1px solid #a0d2ff;
+                font-weight: 600;
+            }
+        """)
+        table_layout.addWidget(self.comp_data_table)
+        self.comp_tabs.addTab(table_widget, "📋 数値データ")
+        
+        layout.addWidget(self.comp_tabs, stretch=1)
         
         return page
 
@@ -4246,6 +4453,16 @@ class MainWindow(QMainWindow):
 
             # グラフ描画
             self._plot_comparison(data_map, labels, is_ratio, mode, graph_type, selected_cats, totals_map)
+            
+            # 数値データテーブルに表示
+            self._update_comparison_table(data_map, labels, selected_cats, is_ratio, totals_map)
+            
+            # データを保存（コピー用）
+            self._comp_data_map = data_map
+            self._comp_labels = labels
+            self._comp_selected_cats = selected_cats
+            self._comp_is_ratio = is_ratio
+            self._comp_totals_map = totals_map
             
         except Exception as e:
             import traceback
@@ -4388,6 +4605,345 @@ class MainWindow(QMainWindow):
         
         self.comp_canvas.fig.tight_layout()
         self.comp_canvas.draw()
+
+    def _update_comparison_table(self, data_map: Dict[str, Dict[str, float]], labels: List[str], selected_cats: List[str], is_ratio: bool, totals_map: Dict[str, float] = None) -> None:
+        """比較結果をテーブルに表示"""
+        # テーブル設定
+        self.comp_data_table.clear()
+        self.comp_data_table.setRowCount(len(labels) + 1)  # +1 for totals
+        self.comp_data_table.setColumnCount(len(selected_cats) + 2)  # +2 for label and total
+        
+        # ヘッダー
+        headers = [""] + selected_cats + ["合計"]
+        self.comp_data_table.setHorizontalHeaderLabels(headers)
+        
+        # データ入力
+        for i, label in enumerate(labels):
+            self.comp_data_table.setItem(i, 0, QTableWidgetItem(label))
+            row_total = 0.0
+            denominator = totals_map.get(label, 1.0) if totals_map and is_ratio else 1.0
+            if denominator == 0:
+                denominator = 1.0
+                
+            for j, cat in enumerate(selected_cats):
+                val = data_map[label].get(cat, 0.0)
+                if is_ratio:
+                    display_val = (val / denominator) * 100
+                    item = QTableWidgetItem(f"{display_val:.2f}%")
+                else:
+                    item = QTableWidgetItem(f"{val:,.2f}")
+                row_total += val
+                self.comp_data_table.setItem(i, j + 1, item)
+            
+            # 行合計
+            if is_ratio:
+                row_ratio = (row_total / denominator) * 100 if denominator > 0 else 0
+                self.comp_data_table.setItem(i, len(selected_cats) + 1, QTableWidgetItem(f"{row_ratio:.2f}%"))
+            else:
+                self.comp_data_table.setItem(i, len(selected_cats) + 1, QTableWidgetItem(f"{row_total:,.2f}"))
+        
+        # 合計行
+        last_row = len(labels)
+        self.comp_data_table.setItem(last_row, 0, QTableWidgetItem("【合計】"))
+        grand_total = 0.0
+        for j, cat in enumerate(selected_cats):
+            cat_total = sum(data_map[l].get(cat, 0.0) for l in labels)
+            grand_total += cat_total
+            if is_ratio:
+                total_denom = sum(totals_map.get(l, 0) for l in labels) if totals_map else grand_total
+                if total_denom == 0:
+                    total_denom = 1.0
+                pct = (cat_total / total_denom) * 100
+                self.comp_data_table.setItem(last_row, j + 1, QTableWidgetItem(f"{pct:.2f}%"))
+            else:
+                self.comp_data_table.setItem(last_row, j + 1, QTableWidgetItem(f"{cat_total:,.2f}"))
+        
+        # 総合計
+        if is_ratio:
+            self.comp_data_table.setItem(last_row, len(selected_cats) + 1, QTableWidgetItem("100.00%"))
+        else:
+            self.comp_data_table.setItem(last_row, len(selected_cats) + 1, QTableWidgetItem(f"{grand_total:,.2f}"))
+
+    def copy_comparison_data(self) -> None:
+        """比較データをクリップボードにコピー"""
+        if not hasattr(self, "_comp_data_map") or self._comp_data_map is None:
+            QtWidgets.QMessageBox.warning(self, "警告", "先に分析を実行してください。")
+            return
+        
+        data_map = self._comp_data_map
+        labels = self._comp_labels
+        selected_cats = self._comp_selected_cats
+        is_ratio = self._comp_is_ratio
+        totals_map = self._comp_totals_map
+        
+        # タブ区切りでコピー
+        lines = []
+        
+        # ヘッダー
+        headers = [""] + selected_cats + ["合計"]
+        lines.append("\t".join(headers))
+        
+        # データ行
+        for label in labels:
+            row = [label]
+            row_total = 0.0
+            denominator = totals_map.get(label, 1.0) if totals_map and is_ratio else 1.0
+            if denominator == 0:
+                denominator = 1.0
+            
+            for cat in selected_cats:
+                val = data_map[label].get(cat, 0.0)
+                if is_ratio:
+                    display_val = (val / denominator) * 100
+                    row.append(f"{display_val:.2f}")
+                else:
+                    row.append(f"{val:.2f}")
+                row_total += val
+            
+            if is_ratio:
+                row_ratio = (row_total / denominator) * 100 if denominator > 0 else 0
+                row.append(f"{row_ratio:.2f}")
+            else:
+                row.append(f"{row_total:.2f}")
+            
+            lines.append("\t".join(row))
+        
+        # 合計行
+        total_row = ["合計"]
+        grand_total = 0.0
+        for cat in selected_cats:
+            cat_total = sum(data_map[l].get(cat, 0.0) for l in labels)
+            grand_total += cat_total
+            if is_ratio:
+                total_denom = sum(totals_map.get(l, 0) for l in labels) if totals_map else grand_total
+                if total_denom == 0:
+                    total_denom = 1.0
+                pct = (cat_total / total_denom) * 100
+                total_row.append(f"{pct:.2f}")
+            else:
+                total_row.append(f"{cat_total:.2f}")
+        
+        if is_ratio:
+            total_row.append("100.00")
+        else:
+            total_row.append(f"{grand_total:.2f}")
+        
+        lines.append("\t".join(total_row))
+        
+        text = "\n".join(lines)
+        
+        clipboard = QApplication.clipboard()
+        clipboard.setText(text)
+        
+        QtWidgets.QMessageBox.information(
+            self, "コピー完了",
+            f"比較データをクリップボードにコピーしました。\n\n"
+            f"ExcelやPowerPointに貼り付けできます。\n"
+            f"({len(labels)}行 × {len(selected_cats)}列)"
+        )
+
+    def transfer_to_analysis_tab(self) -> None:
+        """メインタブで選択したデータを統計分析タブに移行"""
+        code = self.area_combo.currentData()
+        year = self.year_combo.currentData() if hasattr(self, "year_combo") else None
+        month = self.month_combo.currentData() if hasattr(self, "month_combo") else None
+        
+        if not code or not year or not month:
+            QtWidgets.QMessageBox.warning(self, "警告", "エリアと年月を選択してください。")
+            return
+        
+        ym = f"{year}{month:02d}"
+        
+        # AI分析タブのコンボボックスを同期
+        # エリアを設定
+        for i in range(self.ai_area_combo.count()):
+            if self.ai_area_combo.itemData(i) == code:
+                self.ai_area_combo.setCurrentIndex(i)
+                break
+        
+        # 年を設定
+        for i in range(self.ai_year_combo.count()):
+            if self.ai_year_combo.itemData(i) == year:
+                self.ai_year_combo.setCurrentIndex(i)
+                break
+        
+        # 月を設定
+        for i in range(self.ai_month_combo.count()):
+            if self.ai_month_combo.itemData(i) == month:
+                self.ai_month_combo.setCurrentIndex(i)
+                break
+        
+        # 統計集計の列コンボを更新
+        self._update_stats_columns()
+        
+        # 統計分析タブに切り替え
+        self.tabs.setCurrentIndex(1)
+        
+        # 統計集計タブを選択
+        self.ai_tabs.setCurrentWidget(self.ai_tabs.widget(self.ai_tabs.count() - 1))
+        
+        QtWidgets.QMessageBox.information(
+            self, "データ移行",
+            f"メインタブのデータを統計分析タブに移行しました。\n\n"
+            f"エリア: {AREA_INFO[code].name}\n"
+            f"年月: {year}年{month}月\n\n"
+            f"「統計集計」タブで集計を実行できます。"
+        )
+
+    def _update_stats_columns(self) -> None:
+        """統計集計の列コンボボックスを更新"""
+        if not hasattr(self, "stats_column_combo"):
+            return
+        
+        self.stats_column_combo.clear()
+        
+        # AI用データフレームをロード
+        code = self.ai_area_combo.currentData()
+        ym = self.ai_ym_combo.currentData()
+        
+        if not code or not ym:
+            return
+        
+        path = DATA_DIR / f"eria_jukyu_{ym}_{code}.csv"
+        if not path.exists():
+            return
+        
+        try:
+            df, _ = read_csv(path)
+            # 数値列のみをリストに追加
+            for col in df.columns:
+                if pd.api.types.is_numeric_dtype(df[col]):
+                    self.stats_column_combo.addItem(col)
+        except Exception:
+            pass
+
+    def run_stats_summary(self) -> None:
+        """統計集計を実行"""
+        code = self.ai_area_combo.currentData()
+        ym = self.ai_ym_combo.currentData()
+        col_name = self.stats_column_combo.currentText()
+        period = self.stats_period_combo.currentText()
+        
+        if not code or not ym or not col_name:
+            QtWidgets.QMessageBox.warning(self, "警告", "エリア、年月、対象列を選択してください。")
+            return
+        
+        path = DATA_DIR / f"eria_jukyu_{ym}_{code}.csv"
+        if not path.exists():
+            QtWidgets.QMessageBox.warning(self, "警告", f"ファイルが見つかりません: {path.name}")
+            return
+        
+        try:
+            df, time_col = read_csv(path)
+            
+            if col_name not in df.columns:
+                QtWidgets.QMessageBox.warning(self, "警告", f"列 '{col_name}' が見つかりません。")
+                return
+            
+            # 数値に変換
+            df[col_name] = pd.to_numeric(df[col_name], errors="coerce")
+            
+            # 時間列をパース
+            if time_col and time_col in df.columns:
+                df["_datetime"] = pd.to_datetime(df[time_col], errors="coerce")
+            else:
+                df["_datetime"] = pd.to_datetime(df.index)
+            
+            # 集計キーを作成
+            if period == "時間別":
+                df["_key"] = df["_datetime"].dt.strftime("%Y-%m-%d %H:00")
+                key_format = "時間"
+            elif period == "日別":
+                df["_key"] = df["_datetime"].dt.strftime("%Y-%m-%d")
+                key_format = "日"
+            elif period == "週別":
+                df["_key"] = df["_datetime"].dt.strftime("%Y-W%V")
+                key_format = "週"
+            elif period == "月別":
+                df["_key"] = df["_datetime"].dt.strftime("%Y-%m")
+                key_format = "月"
+            else:
+                df["_key"] = "全期間"
+                key_format = ""
+            
+            # 集計
+            grouped = df.groupby("_key")[col_name].agg(["sum", "mean", "min", "max", "count"])
+            grouped = grouped.reset_index()
+            grouped.columns = [key_format or "期間", "合計", "平均", "最小", "最大", "データ数"]
+            
+            # テーブルに表示
+            self.stats_table.clear()
+            self.stats_table.setRowCount(len(grouped))
+            self.stats_table.setColumnCount(len(grouped.columns))
+            self.stats_table.setHorizontalHeaderLabels(grouped.columns.tolist())
+            
+            for i, row in grouped.iterrows():
+                for j, val in enumerate(row):
+                    if isinstance(val, (int, float)) and j > 0:
+                        item = QTableWidgetItem(f"{val:,.2f}")
+                    else:
+                        item = QTableWidgetItem(str(val))
+                    self.stats_table.setItem(i, j, item)
+            
+            # サマリー
+            total_sum = df[col_name].sum()
+            total_mean = df[col_name].mean()
+            total_min = df[col_name].min()
+            total_max = df[col_name].max()
+            total_count = df[col_name].count()
+            
+            self.stats_summary_label.setText(
+                f"📊 {AREA_INFO[code].name} - {ym[:4]}年{ym[4:6]}月 - {col_name}\n\n"
+                f"【全体統計】\n"
+                f"  • 合計: {total_sum:,.2f}\n"
+                f"  • 平均: {total_mean:,.2f}\n"
+                f"  • 最小: {total_min:,.2f}\n"
+                f"  • 最大: {total_max:,.2f}\n"
+                f"  • データ数: {total_count:,}\n\n"
+                f"集計期間: {period} ({len(grouped)}区間)"
+            )
+            
+            # 保存用にデータを保持
+            self._stats_result = grouped
+            
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            QtWidgets.QMessageBox.critical(self, "エラー", f"集計中にエラーが発生しました:\n{str(e)}")
+
+    def copy_stats_to_clipboard(self) -> None:
+        """統計集計結果をクリップボードにコピー"""
+        if not hasattr(self, "_stats_result") or self._stats_result is None:
+            QtWidgets.QMessageBox.warning(self, "警告", "先に集計を実行してください。")
+            return
+        
+        # タブ区切りでコピー（Excel/PowerPoint貼り付け用）
+        text_lines = []
+        
+        # ヘッダー
+        text_lines.append("\t".join(self._stats_result.columns.tolist()))
+        
+        # データ
+        for _, row in self._stats_result.iterrows():
+            line = []
+            for val in row:
+                if isinstance(val, (int, float)):
+                    line.append(f"{val:.2f}")
+                else:
+                    line.append(str(val))
+            text_lines.append("\t".join(line))
+        
+        text = "\n".join(text_lines)
+        
+        clipboard = QApplication.clipboard()
+        clipboard.setText(text)
+        
+        QtWidgets.QMessageBox.information(
+            self, "コピー完了",
+            f"統計集計結果をクリップボードにコピーしました。\n\n"
+            f"ExcelやPowerPointに貼り付けできます。\n"
+            f"({len(self._stats_result)}行)"
+        )
 
 def main():
     try:
