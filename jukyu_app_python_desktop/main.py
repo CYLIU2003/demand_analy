@@ -916,6 +916,10 @@ class MainWindow(QMainWindow):
         stats_widget = self._create_stats_summary_widget()
         self.ai_tabs.addTab(stats_widget, "📊 統計集計")
         
+        # 需要・天候分析タブ
+        demand_weather_widget = self._create_demand_weather_widget()
+        self.ai_tabs.addTab(demand_weather_widget, "🌤️ 需要・天候分析")
+        
         layout.addWidget(self.ai_tabs)
         
         return page
@@ -990,6 +994,141 @@ class MainWindow(QMainWindow):
             }
         """)
         layout.addWidget(self.stats_summary_label)
+        
+        return widget
+
+    def _create_demand_weather_widget(self) -> QWidget:
+        """需要・天候分析ウィジェットを作成"""
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(10)
+        
+        # 説明
+        desc = QLabel("需要や発電量が高い日・低い日の天候情報と曜日を分析します。")
+        desc.setStyleSheet("color: #666; font-size: 12px;")
+        layout.addWidget(desc)
+        
+        # コントロール行
+        control_layout = QHBoxLayout()
+        
+        control_layout.addWidget(QLabel("分析対象:"))
+        self.dw_column_combo = QComboBox()
+        self.dw_column_combo.setMinimumWidth(200)
+        control_layout.addWidget(self.dw_column_combo)
+        
+        control_layout.addWidget(QLabel("上位/下位:"))
+        self.dw_top_n_spin = QSpinBox()
+        self.dw_top_n_spin.setRange(5, 50)
+        self.dw_top_n_spin.setValue(10)
+        self.dw_top_n_spin.setSuffix(" 日")
+        control_layout.addWidget(self.dw_top_n_spin)
+        
+        control_layout.addWidget(QLabel("集計単位:"))
+        self.dw_agg_combo = QComboBox()
+        self.dw_agg_combo.addItems(["日別平均", "日別合計", "日別最大"])
+        control_layout.addWidget(self.dw_agg_combo)
+        
+        analyze_btn = QPushButton("🔍 分析実行")
+        analyze_btn.setMinimumHeight(36)
+        analyze_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #0068B7;
+                color: white;
+                font-weight: bold;
+                border-radius: 5px;
+                padding: 0 20px;
+            }
+            QPushButton:hover {
+                background-color: #005999;
+            }
+        """)
+        analyze_btn.clicked.connect(self.run_demand_weather_analysis)
+        control_layout.addWidget(analyze_btn)
+        
+        copy_btn = QPushButton("📋 コピー")
+        copy_btn.setMinimumHeight(36)
+        copy_btn.clicked.connect(self.copy_demand_weather_result)
+        control_layout.addWidget(copy_btn)
+        
+        control_layout.addStretch()
+        layout.addLayout(control_layout)
+        
+        # 結果表示（スプリッター）
+        splitter = QSplitter(Qt.Horizontal)
+        
+        # 左側: 高い日テーブル
+        high_frame = QFrame()
+        high_layout = QVBoxLayout(high_frame)
+        high_layout.setContentsMargins(5, 5, 5, 5)
+        high_label = QLabel("📈 高い日 TOP N")
+        high_label.setStyleSheet("font-weight: bold; color: #dc2626;")
+        high_layout.addWidget(high_label)
+        
+        self.dw_high_table = QTableWidget()
+        self.dw_high_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+        self.dw_high_table.setAlternatingRowColors(True)
+        self.dw_high_table.setStyleSheet("""
+            QTableWidget {
+                background-color: #fff5f5;
+                alternate-background-color: #fef2f2;
+                border: 1px solid #fecaca;
+            }
+            QHeaderView::section {
+                background-color: #fecaca;
+                color: #991b1b;
+                padding: 6px;
+                border: 1px solid #f87171;
+                font-weight: 600;
+            }
+        """)
+        high_layout.addWidget(self.dw_high_table)
+        splitter.addWidget(high_frame)
+        
+        # 右側: 低い日テーブル
+        low_frame = QFrame()
+        low_layout = QVBoxLayout(low_frame)
+        low_layout.setContentsMargins(5, 5, 5, 5)
+        low_label = QLabel("📉 低い日 TOP N")
+        low_label.setStyleSheet("font-weight: bold; color: #2563eb;")
+        low_layout.addWidget(low_label)
+        
+        self.dw_low_table = QTableWidget()
+        self.dw_low_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+        self.dw_low_table.setAlternatingRowColors(True)
+        self.dw_low_table.setStyleSheet("""
+            QTableWidget {
+                background-color: #eff6ff;
+                alternate-background-color: #dbeafe;
+                border: 1px solid #bfdbfe;
+            }
+            QHeaderView::section {
+                background-color: #bfdbfe;
+                color: #1e40af;
+                padding: 6px;
+                border: 1px solid #60a5fa;
+                font-weight: 600;
+            }
+        """)
+        low_layout.addWidget(self.dw_low_table)
+        splitter.addWidget(low_frame)
+        
+        layout.addWidget(splitter, stretch=1)
+        
+        # サマリー
+        self.dw_summary_label = QLabel("")
+        self.dw_summary_label.setWordWrap(True)
+        self.dw_summary_label.setStyleSheet("""
+            QLabel {
+                background-color: #fefce8;
+                border: 1px solid #fde047;
+                border-radius: 8px;
+                padding: 15px;
+                font-size: 12px;
+                color: #713f12;
+            }
+        """)
+        layout.addWidget(self.dw_summary_label)
         
         return widget
 
@@ -1544,6 +1683,15 @@ class MainWindow(QMainWindow):
             for col in numeric_columns:
                 self.ai_column_combo.addItem(col)
             self.ai_column_combo.blockSignals(False)
+            
+            # 需要・天候分析の列コンボも更新
+            if hasattr(self, "dw_column_combo"):
+                self.dw_column_combo.blockSignals(True)
+                self.dw_column_combo.clear()
+                for col in numeric_columns:
+                    self.dw_column_combo.addItem(col)
+                self.dw_column_combo.blockSignals(False)
+            
             self.ai_dataframe = df
             self.ai_time_column = time_col
             self.ai_target_series = None
@@ -4995,6 +5143,244 @@ class MainWindow(QMainWindow):
             f"統計集計結果をクリップボードにコピーしました。\n\n"
             f"ExcelやPowerPointに貼り付けできます。\n"
             f"({len(self._stats_result)}行)"
+        )
+
+    def run_demand_weather_analysis(self) -> None:
+        """需要・天候分析を実行"""
+        code = self.ai_area_combo.currentData()
+        year = self.ai_year_combo.currentData()
+        month = self.ai_month_combo.currentData()
+        col_name = self.dw_column_combo.currentText()
+        top_n = self.dw_top_n_spin.value()
+        agg_method = self.dw_agg_combo.currentText()
+        
+        if not code or not year or not month or not col_name:
+            QtWidgets.QMessageBox.warning(self, "警告", "エリア、年月、分析対象を選択してください。")
+            return
+        
+        # 型変換
+        if isinstance(month, str):
+            month = int(month)
+        if isinstance(year, str):
+            year = int(year)
+        
+        ym = f"{year}{month:02d}"
+        path = DATA_DIR / f"eria_jukyu_{ym}_{code}.csv"
+        
+        if not path.exists():
+            QtWidgets.QMessageBox.warning(self, "警告", f"ファイルが見つかりません: {path.name}")
+            return
+        
+        try:
+            # 需給データ読み込み
+            df, time_col = read_csv(path)
+            
+            if col_name not in df.columns:
+                QtWidgets.QMessageBox.warning(self, "警告", f"列 '{col_name}' が見つかりません。")
+                return
+            
+            df[col_name] = pd.to_numeric(df[col_name], errors="coerce")
+            
+            # 時間列をパース
+            if time_col and time_col in df.columns:
+                df["_datetime"] = pd.to_datetime(df[time_col], errors="coerce")
+            else:
+                df["_datetime"] = pd.to_datetime(df.index)
+            
+            df["_date"] = df["_datetime"].dt.date
+            df["_weekday"] = df["_datetime"].dt.dayofweek  # 0=月曜, 6=日曜
+            
+            # 曜日名
+            weekday_names = ["月", "火", "水", "木", "金", "土", "日"]
+            
+            # 日別集計
+            if agg_method == "日別平均":
+                daily = df.groupby("_date")[col_name].mean().reset_index()
+                daily.columns = ["date", "value"]
+            elif agg_method == "日別合計":
+                daily = df.groupby("_date")[col_name].sum().reset_index()
+                daily.columns = ["date", "value"]
+            else:  # 日別最大
+                daily = df.groupby("_date")[col_name].max().reset_index()
+                daily.columns = ["date", "value"]
+            
+            daily["date"] = pd.to_datetime(daily["date"])
+            daily["weekday"] = daily["date"].dt.dayofweek
+            daily["weekday_name"] = daily["weekday"].apply(lambda x: weekday_names[x])
+            
+            # 天候データ読み込み
+            weather_file = find_weather_file(code, ym)
+            weather_df = None
+            has_weather = False
+            
+            if weather_file:
+                try:
+                    weather_df = read_weather_csv(weather_file)
+                    weather_df["_date"] = weather_df["datetime"].dt.date
+                    
+                    # 日別に集計（平均気温、合計降水量、合計日照）
+                    weather_daily = weather_df.groupby("_date").agg({
+                        "temperature": "mean",
+                        "precipitation": "sum",
+                        "sunlight": "sum",
+                        "wind_speed": "mean"
+                    }).reset_index()
+                    weather_daily.columns = ["date", "気温(℃)", "降水量(mm)", "日照時間(h)", "風速(m/s)"]
+                    weather_daily["date"] = pd.to_datetime(weather_daily["date"])
+                    
+                    # 結合
+                    daily = daily.merge(weather_daily, on="date", how="left")
+                    has_weather = True
+                except Exception as e:
+                    print(f"天候データ読み込みエラー: {e}")
+            
+            # 上位N日と下位N日を取得
+            daily_sorted = daily.sort_values("value", ascending=False)
+            top_days = daily_sorted.head(top_n).copy()
+            bottom_days = daily_sorted.tail(top_n).copy()
+            
+            # テーブル更新
+            self._update_demand_weather_table(self.dw_high_table, top_days, has_weather)
+            self._update_demand_weather_table(self.dw_low_table, bottom_days, has_weather)
+            
+            # サマリー作成
+            summary_lines = []
+            summary_lines.append(f"📊 分析対象: {AREA_INFO[code].name} - {year}年{month}月 - {col_name}")
+            summary_lines.append(f"集計方法: {agg_method}")
+            summary_lines.append("")
+            
+            # 曜日分布
+            top_weekday_counts = top_days["weekday_name"].value_counts()
+            bottom_weekday_counts = bottom_days["weekday_name"].value_counts()
+            
+            summary_lines.append("【高い日の曜日分布】")
+            for wd in weekday_names:
+                count = top_weekday_counts.get(wd, 0)
+                summary_lines.append(f"  {wd}曜: {'■' * count} ({count}日)")
+            
+            summary_lines.append("")
+            summary_lines.append("【低い日の曜日分布】")
+            for wd in weekday_names:
+                count = bottom_weekday_counts.get(wd, 0)
+                summary_lines.append(f"  {wd}曜: {'■' * count} ({count}日)")
+            
+            if has_weather:
+                summary_lines.append("")
+                summary_lines.append("【天候傾向】")
+                
+                # 高い日の天候
+                high_temp = top_days["気温(℃)"].mean()
+                high_precip = top_days["降水量(mm)"].mean()
+                low_temp = bottom_days["気温(℃)"].mean()
+                low_precip = bottom_days["降水量(mm)"].mean()
+                
+                summary_lines.append(f"  高い日: 平均気温 {high_temp:.1f}℃, 平均降水量 {high_precip:.1f}mm")
+                summary_lines.append(f"  低い日: 平均気温 {low_temp:.1f}℃, 平均降水量 {low_precip:.1f}mm")
+                
+                temp_diff = high_temp - low_temp
+                if abs(temp_diff) > 2:
+                    if temp_diff > 0:
+                        summary_lines.append(f"  → 高い日は気温が高い傾向（{temp_diff:+.1f}℃）")
+                    else:
+                        summary_lines.append(f"  → 高い日は気温が低い傾向（{temp_diff:+.1f}℃）")
+            else:
+                summary_lines.append("")
+                summary_lines.append("※天候データが見つかりませんでした")
+            
+            self.dw_summary_label.setText("\n".join(summary_lines))
+            
+            # 結果保存
+            self._dw_top_days = top_days
+            self._dw_bottom_days = bottom_days
+            self._dw_has_weather = has_weather
+            
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            QtWidgets.QMessageBox.critical(self, "エラー", f"分析中にエラーが発生しました:\n{str(e)}")
+
+    def _update_demand_weather_table(self, table: QTableWidget, df: pd.DataFrame, has_weather: bool) -> None:
+        """需要・天候テーブルを更新"""
+        if has_weather:
+            columns = ["日付", "曜日", "値", "気温(℃)", "降水量(mm)", "日照(h)", "風速(m/s)"]
+        else:
+            columns = ["日付", "曜日", "値"]
+        
+        table.clear()
+        table.setRowCount(len(df))
+        table.setColumnCount(len(columns))
+        table.setHorizontalHeaderLabels(columns)
+        
+        for i, (_, row) in enumerate(df.iterrows()):
+            table.setItem(i, 0, QTableWidgetItem(row["date"].strftime("%Y-%m-%d")))
+            table.setItem(i, 1, QTableWidgetItem(row["weekday_name"]))
+            table.setItem(i, 2, QTableWidgetItem(f"{row['value']:,.2f}"))
+            
+            if has_weather:
+                temp = row.get("気温(℃)", float("nan"))
+                precip = row.get("降水量(mm)", float("nan"))
+                sun = row.get("日照時間(h)", float("nan"))
+                wind = row.get("風速(m/s)", float("nan"))
+                
+                table.setItem(i, 3, QTableWidgetItem(f"{temp:.1f}" if pd.notna(temp) else "-"))
+                table.setItem(i, 4, QTableWidgetItem(f"{precip:.1f}" if pd.notna(precip) else "-"))
+                table.setItem(i, 5, QTableWidgetItem(f"{sun:.1f}" if pd.notna(sun) else "-"))
+                table.setItem(i, 6, QTableWidgetItem(f"{wind:.1f}" if pd.notna(wind) else "-"))
+        
+        table.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.Stretch)
+
+    def copy_demand_weather_result(self) -> None:
+        """需要・天候分析結果をコピー"""
+        if not hasattr(self, "_dw_top_days") or self._dw_top_days is None:
+            QtWidgets.QMessageBox.warning(self, "警告", "先に分析を実行してください。")
+            return
+        
+        lines = []
+        has_weather = self._dw_has_weather
+        
+        # 高い日
+        lines.append("【高い日】")
+        if has_weather:
+            lines.append("日付\t曜日\t値\t気温(℃)\t降水量(mm)\t日照(h)\t風速(m/s)")
+        else:
+            lines.append("日付\t曜日\t値")
+        
+        for _, row in self._dw_top_days.iterrows():
+            line = [row["date"].strftime("%Y-%m-%d"), row["weekday_name"], f"{row['value']:.2f}"]
+            if has_weather:
+                line.extend([
+                    f"{row.get('気温(℃)', 0):.1f}",
+                    f"{row.get('降水量(mm)', 0):.1f}",
+                    f"{row.get('日照時間(h)', 0):.1f}",
+                    f"{row.get('風速(m/s)', 0):.1f}"
+                ])
+            lines.append("\t".join(line))
+        
+        lines.append("")
+        lines.append("【低い日】")
+        if has_weather:
+            lines.append("日付\t曜日\t値\t気温(℃)\t降水量(mm)\t日照(h)\t風速(m/s)")
+        else:
+            lines.append("日付\t曜日\t値")
+        
+        for _, row in self._dw_bottom_days.iterrows():
+            line = [row["date"].strftime("%Y-%m-%d"), row["weekday_name"], f"{row['value']:.2f}"]
+            if has_weather:
+                line.extend([
+                    f"{row.get('気温(℃)', 0):.1f}",
+                    f"{row.get('降水量(mm)', 0):.1f}",
+                    f"{row.get('日照時間(h)', 0):.1f}",
+                    f"{row.get('風速(m/s)', 0):.1f}"
+                ])
+            lines.append("\t".join(line))
+        
+        text = "\n".join(lines)
+        clipboard = QApplication.clipboard()
+        clipboard.setText(text)
+        
+        QtWidgets.QMessageBox.information(
+            self, "コピー完了",
+            "需要・天候分析結果をクリップボードにコピーしました。"
         )
 
 def main():
