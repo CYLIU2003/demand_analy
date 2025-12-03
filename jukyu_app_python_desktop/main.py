@@ -245,10 +245,25 @@ def read_weather_csv(path: Path) -> pd.DataFrame:
     フォーマット例:
     - 行1: ダウンロード時刻
     - 行2: 地名ヘッダー（東京,東京,...）
-    - 行3: カラム名（年月日時,気温(℃),気温(℃),...）
+    - 行3: カラム名（年月日時,気温(℃),気温(℃),...,天気,天気,天気）
     - 行4: サブヘッダー（品質情報,均質番号,...）
     - 行5以降: データ本体
+    
+    天気コード（気象庁）:
+    1: 快晴, 2: 晴れ, 3: 薄曇, 4: 曇, 5: 煙霧, 8: 霧, 9: 霧雨,
+    10: 雨, 11: みぞれ, 12: 雪, 13: あられ, 14: ひょう, 15: 雷,
+    16: しゅう雨, 17: 着氷性の雨, 18: 着氷性の霧雨, 19: しゅう雪,
+    22: 霧雪, 23: 凍雨, 24: 細氷, 28: もや, 101: 降水
     """
+    # 天気コードから天気名への変換テーブル
+    WEATHER_CODES = {
+        1: "快晴", 2: "晴れ", 3: "薄曇", 4: "曇", 5: "煙霧",
+        6: "砂じん嵐", 7: "地ふぶき", 8: "霧", 9: "霧雨", 10: "雨",
+        11: "みぞれ", 12: "雪", 13: "あられ", 14: "ひょう", 15: "雷",
+        16: "しゅう雨", 17: "着氷性の雨", 18: "着氷性の霧雨", 19: "しゅう雪",
+        22: "霧雪", 23: "凍雨", 24: "細氷", 28: "もや", 101: "降水"
+    }
+    
     try:
         # Shift_JISで読み込み、最初の4行をスキップ
         df = pd.read_csv(path, encoding="shift_jis", skiprows=4, engine="python")
@@ -261,33 +276,42 @@ def read_weather_csv(path: Path) -> pd.DataFrame:
         df["datetime"] = pd.to_datetime(df["datetime"], errors="coerce")
         
         # 必要な列を抽出（各項目の最初の値のみ取得）
-        # カラム構成: 年月日時, 気温, 品質, 均質, 降水量, 品質, 均質, ...
+        # カラム構成: 年月日時, 気温, 品質, 均質, 降水量, 現象なし, 品質, 均質, ...
         weather_data = pd.DataFrame()
         weather_data["datetime"] = df["datetime"]
         
-        # 気温 (2列目)
+        # 気温 (2列目, インデックス1)
         if len(df.columns) > 1:
             weather_data["temperature"] = pd.to_numeric(df.iloc[:, 1], errors="coerce")
         
-        # 降水量 (5列目)
+        # 降水量 (5列目, インデックス4)
         if len(df.columns) > 4:
             weather_data["precipitation"] = pd.to_numeric(df.iloc[:, 4], errors="coerce")
         
-        # 日照時間 (8列目)
-        if len(df.columns) > 7:
+        # 日照時間 (9列目, インデックス8)
+        if len(df.columns) > 8:
             weather_data["sunlight"] = pd.to_numeric(df.iloc[:, 8], errors="coerce")
         
-        # 風速 (12列目)
-        if len(df.columns) > 11:
+        # 風速 (13列目, インデックス12)
+        if len(df.columns) > 12:
             weather_data["wind_speed"] = pd.to_numeric(df.iloc[:, 12], errors="coerce")
         
-        # 風向 (14列目) - 文字列
-        if len(df.columns) > 13:
+        # 風向 (15列目, インデックス14) - 文字列
+        if len(df.columns) > 14:
             weather_data["wind_direction"] = df.iloc[:, 14]
         
-        # 日射量 (17列目)
-        if len(df.columns) > 16:
+        # 日射量 (18列目, インデックス17)
+        if len(df.columns) > 17:
             weather_data["solar_radiation"] = pd.to_numeric(df.iloc[:, 17], errors="coerce")
+        
+        # 天気 (21列目, インデックス20) - 新規追加
+        if len(df.columns) > 20:
+            weather_code = pd.to_numeric(df.iloc[:, 20], errors="coerce")
+            weather_data["weather_code"] = weather_code
+            # コードを天気名に変換
+            weather_data["weather"] = weather_code.apply(
+                lambda x: WEATHER_CODES.get(int(x), "不明") if pd.notna(x) else ""
+            )
         
         # NaNを含む行を削除
         weather_data = weather_data.dropna(subset=["datetime"])
@@ -5212,26 +5236,49 @@ class MainWindow(QMainWindow):
             weather_file = find_weather_file(code, ym)
             weather_df = None
             has_weather = False
+            has_weather_name = False  # 天気名があるかどうか
             
             if weather_file:
                 try:
                     weather_df = read_weather_csv(weather_file)
                     weather_df["_date"] = weather_df["datetime"].dt.date
                     
-                    # 日別に集計（平均気温、合計降水量、合計日照）
-                    weather_daily = weather_df.groupby("_date").agg({
+                    # 集計する列を定義
+                    agg_dict = {
                         "temperature": "mean",
                         "precipitation": "sum",
                         "sunlight": "sum",
                         "wind_speed": "mean"
-                    }).reset_index()
+                    }
+                    
+                    # 天気コードがあれば最頻値を取得
+                    if "weather_code" in weather_df.columns:
+                        has_weather_name = True
+                        # 各日の最頻天気を取得
+                        def get_mode_weather(group):
+                            if "weather" in group.columns and len(group["weather"].dropna()) > 0:
+                                return group["weather"].mode().iloc[0] if len(group["weather"].mode()) > 0 else ""
+                            return ""
+                        
+                        weather_mode = weather_df.groupby("_date").apply(get_mode_weather).reset_index()
+                        weather_mode.columns = ["date", "天気"]
+                        weather_mode["date"] = pd.to_datetime(weather_mode["date"])
+                    
+                    # 日別に集計（平均気温、合計降水量、合計日照）
+                    weather_daily = weather_df.groupby("_date").agg(agg_dict).reset_index()
                     weather_daily.columns = ["date", "気温(℃)", "降水量(mm)", "日照時間(h)", "風速(m/s)"]
                     weather_daily["date"] = pd.to_datetime(weather_daily["date"])
+                    
+                    # 天気を結合
+                    if has_weather_name:
+                        weather_daily = weather_daily.merge(weather_mode, on="date", how="left")
                     
                     # 結合
                     daily = daily.merge(weather_daily, on="date", how="left")
                     has_weather = True
                 except Exception as e:
+                    import traceback
+                    traceback.print_exc()
                     print(f"天候データ読み込みエラー: {e}")
             
             # 上位N日と下位N日を取得
@@ -5283,6 +5330,24 @@ class MainWindow(QMainWindow):
                         summary_lines.append(f"  → 高い日は気温が高い傾向（{temp_diff:+.1f}℃）")
                     else:
                         summary_lines.append(f"  → 高い日は気温が低い傾向（{temp_diff:+.1f}℃）")
+                
+                # 天気の分布（天気名がある場合）
+                if "天気" in top_days.columns:
+                    summary_lines.append("")
+                    summary_lines.append("【天気分布】")
+                    
+                    high_weather = top_days["天気"].value_counts()
+                    low_weather = bottom_days["天気"].value_counts()
+                    
+                    summary_lines.append("  高い日の天気:")
+                    for weather, count in high_weather.head(5).items():
+                        if pd.notna(weather) and weather:
+                            summary_lines.append(f"    {weather}: {count}日")
+                    
+                    summary_lines.append("  低い日の天気:")
+                    for weather, count in low_weather.head(5).items():
+                        if pd.notna(weather) and weather:
+                            summary_lines.append(f"    {weather}: {count}日")
             else:
                 summary_lines.append("")
                 summary_lines.append("※天候データが見つかりませんでした")
@@ -5301,8 +5366,14 @@ class MainWindow(QMainWindow):
 
     def _update_demand_weather_table(self, table: QTableWidget, df: pd.DataFrame, has_weather: bool) -> None:
         """需要・天候テーブルを更新"""
+        # 天気列があるかチェック
+        has_weather_name = "天気" in df.columns
+        
         if has_weather:
-            columns = ["日付", "曜日", "値", "気温(℃)", "降水量(mm)", "日照(h)", "風速(m/s)"]
+            if has_weather_name:
+                columns = ["日付", "曜日", "値", "天気", "気温(℃)", "降水量(mm)", "日照(h)", "風速(m/s)"]
+            else:
+                columns = ["日付", "曜日", "値", "気温(℃)", "降水量(mm)", "日照(h)", "風速(m/s)"]
         else:
             columns = ["日付", "曜日", "値"]
         
@@ -5312,20 +5383,32 @@ class MainWindow(QMainWindow):
         table.setHorizontalHeaderLabels(columns)
         
         for i, (_, row) in enumerate(df.iterrows()):
-            table.setItem(i, 0, QTableWidgetItem(row["date"].strftime("%Y-%m-%d")))
-            table.setItem(i, 1, QTableWidgetItem(row["weekday_name"]))
-            table.setItem(i, 2, QTableWidgetItem(f"{row['value']:,.2f}"))
+            col_idx = 0
+            table.setItem(i, col_idx, QTableWidgetItem(row["date"].strftime("%Y-%m-%d")))
+            col_idx += 1
+            table.setItem(i, col_idx, QTableWidgetItem(row["weekday_name"]))
+            col_idx += 1
+            table.setItem(i, col_idx, QTableWidgetItem(f"{row['value']:,.2f}"))
+            col_idx += 1
             
             if has_weather:
+                if has_weather_name:
+                    weather = row.get("天気", "")
+                    table.setItem(i, col_idx, QTableWidgetItem(str(weather) if pd.notna(weather) else "-"))
+                    col_idx += 1
+                
                 temp = row.get("気温(℃)", float("nan"))
                 precip = row.get("降水量(mm)", float("nan"))
                 sun = row.get("日照時間(h)", float("nan"))
                 wind = row.get("風速(m/s)", float("nan"))
                 
-                table.setItem(i, 3, QTableWidgetItem(f"{temp:.1f}" if pd.notna(temp) else "-"))
-                table.setItem(i, 4, QTableWidgetItem(f"{precip:.1f}" if pd.notna(precip) else "-"))
-                table.setItem(i, 5, QTableWidgetItem(f"{sun:.1f}" if pd.notna(sun) else "-"))
-                table.setItem(i, 6, QTableWidgetItem(f"{wind:.1f}" if pd.notna(wind) else "-"))
+                table.setItem(i, col_idx, QTableWidgetItem(f"{temp:.1f}" if pd.notna(temp) else "-"))
+                col_idx += 1
+                table.setItem(i, col_idx, QTableWidgetItem(f"{precip:.1f}" if pd.notna(precip) else "-"))
+                col_idx += 1
+                table.setItem(i, col_idx, QTableWidgetItem(f"{sun:.1f}" if pd.notna(sun) else "-"))
+                col_idx += 1
+                table.setItem(i, col_idx, QTableWidgetItem(f"{wind:.1f}" if pd.notna(wind) else "-"))
         
         table.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.Stretch)
 
@@ -5337,17 +5420,27 @@ class MainWindow(QMainWindow):
         
         lines = []
         has_weather = self._dw_has_weather
+        has_weather_name = "天気" in self._dw_top_days.columns
+        
+        # ヘッダー作成
+        if has_weather:
+            if has_weather_name:
+                header = "日付\t曜日\t値\t天気\t気温(℃)\t降水量(mm)\t日照(h)\t風速(m/s)"
+            else:
+                header = "日付\t曜日\t値\t気温(℃)\t降水量(mm)\t日照(h)\t風速(m/s)"
+        else:
+            header = "日付\t曜日\t値"
         
         # 高い日
         lines.append("【高い日】")
-        if has_weather:
-            lines.append("日付\t曜日\t値\t気温(℃)\t降水量(mm)\t日照(h)\t風速(m/s)")
-        else:
-            lines.append("日付\t曜日\t値")
+        lines.append(header)
         
         for _, row in self._dw_top_days.iterrows():
             line = [row["date"].strftime("%Y-%m-%d"), row["weekday_name"], f"{row['value']:.2f}"]
             if has_weather:
+                if has_weather_name:
+                    weather = row.get('天気', '')
+                    line.append(str(weather) if pd.notna(weather) else "")
                 line.extend([
                     f"{row.get('気温(℃)', 0):.1f}",
                     f"{row.get('降水量(mm)', 0):.1f}",
@@ -5358,14 +5451,14 @@ class MainWindow(QMainWindow):
         
         lines.append("")
         lines.append("【低い日】")
-        if has_weather:
-            lines.append("日付\t曜日\t値\t気温(℃)\t降水量(mm)\t日照(h)\t風速(m/s)")
-        else:
-            lines.append("日付\t曜日\t値")
+        lines.append(header)
         
         for _, row in self._dw_bottom_days.iterrows():
             line = [row["date"].strftime("%Y-%m-%d"), row["weekday_name"], f"{row['value']:.2f}"]
             if has_weather:
+                if has_weather_name:
+                    weather = row.get('天気', '')
+                    line.append(str(weather) if pd.notna(weather) else "")
                 line.extend([
                     f"{row.get('気温(℃)', 0):.1f}",
                     f"{row.get('降水量(mm)', 0):.1f}",
