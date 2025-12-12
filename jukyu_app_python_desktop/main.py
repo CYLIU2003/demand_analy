@@ -580,7 +580,20 @@ class MainWindow(QMainWindow):
         super().__init__()
         print("super().__init__ done")
         self.setWindowTitle("電力需給データ分析ツール")
-        self.setGeometry(100, 100, 1800, 1000)
+        
+        # 画面サイズに合わせてウィンドウサイズを自動調整
+        screen = QApplication.primaryScreen()
+        if screen:
+            screen_size = screen.availableGeometry()
+            # 画面の80%のサイズで起動、最大1600x900
+            width = min(int(screen_size.width() * 0.8), 1600)
+            height = min(int(screen_size.height() * 0.85), 900)
+            # 画面中央に配置
+            x = (screen_size.width() - width) // 2
+            y = (screen_size.height() - height) // 2
+            self.setGeometry(x, y, width, height)
+        else:
+            self.setGeometry(100, 100, 1400, 800)
         
         # データ管理
         self.files: list[Tuple[YearMonth, AreaCode, Path]] = []

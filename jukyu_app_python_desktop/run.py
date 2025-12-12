@@ -82,23 +82,30 @@ def check_python_version() -> bool:
 
 
 def find_python_311() -> str | None:
-    """Python 3.11 の実行ファイルを探す"""
-    candidates = []
-    
+    """使用するPython実行ファイルを探す。
+
+    可能であれば 3.11 を優先しますが、見つからない場合は
+    "現在このスクリプトを実行している Python" をそのまま使います。
+
+    これにより、Python 3.10 など 3.11 未満の環境でも
+    仮想環境 .demand_analy を自動作成して実行できるようにします。
+    """
+
+    # まずは各OSで "python3.11" などを優先的に探す
     if platform.system() == "Windows":
         # Windows: py ランチャーを試す
         try:
             result = subprocess.run(
                 ["py", "-3.11", "--version"],
                 capture_output=True,
-                text=True
+                text=True,
             )
             if result.returncode == 0:
                 return "py -3.11"
         except FileNotFoundError:
             pass
-        
-        # 一般的なインストールパスを探す
+
+        # 一般的なインストールパス
         possible_paths = [
             Path(os.environ.get("LOCALAPPDATA", "")) / "Programs" / "Python" / "Python311" / "python.exe",
             Path("C:/Python311/python.exe"),
@@ -106,31 +113,27 @@ def find_python_311() -> str | None:
         ]
         for p in possible_paths:
             if p.exists():
-                candidates.append(str(p))
+                return str(p)
     else:
-        # Linux/Mac
+        # Linux / macOS
         for name in ["python3.11", "python3"]:
             try:
                 result = subprocess.run(
                     [name, "--version"],
                     capture_output=True,
-                    text=True
+                    text=True,
                 )
-                if "3.11" in result.stdout:
+                if result.returncode == 0:
                     return name
             except FileNotFoundError:
                 continue
-    
-    # 現在のPythonが3.11なら使う
-    if sys.version_info[:2] == (3, 11):
-        return sys.executable
-    
-    # 3.11が見つからない場合、現在のPythonを使う（3.11以上なら）
-    if sys.version_info >= (3, 11) and sys.version_info < (3, 14):
-        print_status(f"Python 3.11が見つかりません。現在の {sys.version_info[0]}.{sys.version_info[1]} を使用します", "WARN")
-        return sys.executable
-    
-    return candidates[0] if candidates else None
+
+    # 上記で見つからなかった場合は、実行中の Python をそのまま使う
+    print_status(
+        f"Python 3.11 が見つかりません。現在の Python {sys.version_info[0]}.{sys.version_info[1]} を使用します",
+        "WARN",
+    )
+    return sys.executable
 
 
 def venv_exists() -> bool:
