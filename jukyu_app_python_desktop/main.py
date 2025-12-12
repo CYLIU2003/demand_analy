@@ -525,6 +525,13 @@ class GraphCard(QFrame):
         header.addWidget(self.tag_label)
         layout.addLayout(header)
 
+        self.title_label = QLabel("")
+        self.title_label.setWordWrap(True)
+        self.title_label.setStyleSheet(
+            "color: #0068B7; font-weight: 700; font-size: 16px;"
+        )
+        layout.addWidget(self.title_label)
+
         self.meta_label = QLabel(self._format_meta_text())
         self.meta_label.setWordWrap(True)
         self.meta_label.setStyleSheet("color: #2d3748;")
@@ -535,9 +542,9 @@ class GraphCard(QFrame):
         button_row = QHBoxLayout()
         button_row.addStretch()
         save_btn = QPushButton("💾 このグラフを保存")
-        save_btn.clicked.connect(self.save_snapshot)
+        save_btn.clicked.connect(lambda _checked=False: self.save_snapshot())
         remove_btn = QPushButton("🗑 削除")
-        remove_btn.clicked.connect(self.remove_callback)
+        remove_btn.clicked.connect(lambda _checked=False: self.remove_callback(self))
         button_row.addWidget(save_btn)
         button_row.addWidget(remove_btn)
         layout.addLayout(button_row)
@@ -569,8 +576,16 @@ class GraphCard(QFrame):
         )
 
         if filename:
-            self.canvas.fig.savefig(filename, dpi=self.graph_settings['dpi'], bbox_inches='tight')
+            dpi = int(self.snapshot.settings.get("dpi", 100))
+            self.canvas.fig.savefig(filename, dpi=dpi, bbox_inches='tight')
             QtWidgets.QMessageBox.information(self, "成功", f"グラフを保存しました:\n{filename}")
+
+    def set_plot_title(self, title: str) -> None:
+        """カード表示用のタイトルを設定する。"""
+        title = title or ""
+        self.title_label.setText(title)
+        # Keep snapshot settings in sync for future operations.
+        self.snapshot.settings["title"] = title
 
 class MainWindow(QMainWindow):
     """メインウィンドウクラス - 需給データ分析アプリケーション"""
@@ -610,10 +625,12 @@ class MainWindow(QMainWindow):
         
         # 選択状態
         self.selected_columns: list[str] = []
+        # データセットごとの列選択キャッシュ {(area_code, year_month): [cols...]}
+        self.column_selection_cache: dict[tuple[str, str], list[str]] = {}
         
         # グラフ設定
         self.graph_settings = {
-            "title": "電力需給グラフ",
+            "title": "",
             "xlabel": "時刻",
             "ylabel": "電力 (kW)",
             "linewidth": 2.0,
@@ -3550,6 +3567,13 @@ class MainWindow(QMainWindow):
     
     def update_column_checkboxes(self):
         # 列チェックボックスを更新
+        prev_key = getattr(self, "current_dataset_key", None)
+        if prev_key and isinstance(prev_key, tuple):
+            # 現在の選択状態をキャッシュ
+            self.column_selection_cache[prev_key] = [
+                col for col, cb in self.column_checkboxes.items() if cb.isChecked()
+            ]
+
         # 既存のチェックボックスをクリア
         for checkbox in self.column_checkboxes.values():
             checkbox.deleteLater()
@@ -3575,18 +3599,23 @@ class MainWindow(QMainWindow):
             self.current_dataframe = df
             self.current_time_column = tcol
             self.current_dataset_key = (code, ym)
+            saved_selection = self.column_selection_cache.get(self.current_dataset_key)
             
             # 数値カラムを取得
             for c in df.columns:
                     col_str = str(c).lower()
                     if not any(keyword in col_str for keyword in ['date', 'time', '時刻', '日時', '日付']):
                         checkbox = QCheckBox(str(c))
-                        checkbox.setChecked(True)  # デフォルトで選択
+                        if saved_selection is None:
+                            checkbox.setChecked(True)  # デフォルトで選択
+                        else:
+                            checkbox.setChecked(str(c) in saved_selection)
                         checkbox.toggled.connect(self.on_column_selection_changed)
                         self.column_checkbox_layout.addWidget(checkbox)
                         self.column_checkboxes[str(c)] = checkbox
 
-            self.selected_columns = list(self.column_checkboxes.keys())
+            # チェック状態に基づき選択リストを更新
+            self.on_column_selection_changed()
             self.on_date_change()
         except Exception as e:
             print(f"Error loading columns: {e}")
@@ -3595,6 +3624,8 @@ class MainWindow(QMainWindow):
     def on_column_selection_changed(self):
         # 列選択が変更された時
         self.selected_columns = [col for col, cb in self.column_checkboxes.items() if cb.isChecked()]
+        if getattr(self, "current_dataset_key", None):
+            self.column_selection_cache[self.current_dataset_key] = list(self.selected_columns)
     
     def select_all_columns(self):
         """列チェックボックスを全選択する"""
@@ -3679,6 +3710,8 @@ class MainWindow(QMainWindow):
 
     def remove_graph_card(self, card: GraphCard):
         # コレクションから指定カードを削除
+        if not isinstance(card, GraphCard):
+            return
         if card in self.graph_collection_widgets:
             self.graph_collection_widgets.remove(card)
         if self.graph_collection_layout is not None:
