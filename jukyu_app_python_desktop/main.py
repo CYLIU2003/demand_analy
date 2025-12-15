@@ -648,6 +648,12 @@ class MainWindow(QMainWindow):
             "show_xlabel": True,
             "show_ylabel": True,
             "show_legend": True,
+            # 研究発表用の追加オプション
+            "show_weekday": False,  # 曜日を表示
+            "weekday_format": "short",  # "short": (月), "full": 月曜日, "en_short": Mon
+            "show_week_boundaries": False,  # 週の境界線を表示
+            "week_boundary_day": "monday",  # 週の始まり: monday or sunday
+            "midnight_label_format": "next_day",  # "next_day": 翌日0:00, "same_day": 当日24:00
         }
         
         # グラフコレクション
@@ -3154,6 +3160,86 @@ class MainWindow(QMainWindow):
         options_group.setLayout(options_layout)
         settings_layout.addWidget(options_group)
 
+        # 研究発表用設定グループ
+        research_group = QGroupBox("📊 研究発表用設定")
+        research_group.setStyleSheet("""
+            QGroupBox {
+                font-weight: 600;
+                color: #0068B7;
+                border: 2px solid #a0d2ff;
+                border-radius: 8px;
+                margin-top: 10px;
+                padding-top: 10px;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 10px;
+                padding: 0 5px;
+            }
+        """)
+        research_layout = QVBoxLayout()
+        research_layout.setSpacing(8)
+        
+        # 曜日表示オプション
+        self.show_weekday_check = QCheckBox("日付に曜日を併記する")
+        self.show_weekday_check.setChecked(self.graph_settings.get("show_weekday", False))
+        self.show_weekday_check.setToolTip("X軸の日付ラベルに曜日を表示します")
+        self.show_weekday_check.toggled.connect(lambda: self.update_setting("show_weekday", self.show_weekday_check.isChecked()))
+        research_layout.addWidget(self.show_weekday_check)
+        
+        # 曜日フォーマット選択
+        weekday_format_row = QHBoxLayout()
+        weekday_format_row.addWidget(QLabel("曜日の形式:"))
+        self.weekday_format_combo = QComboBox()
+        self.weekday_format_combo.addItems([
+            "short",     # (月)
+            "full",      # 月曜日
+            "en_short",  # Mon
+            "en_full",   # Monday
+        ])
+        self.weekday_format_combo.setCurrentText(self.graph_settings.get("weekday_format", "short"))
+        self.weekday_format_combo.currentTextChanged.connect(lambda value: self.update_setting("weekday_format", value))
+        weekday_format_row.addWidget(self.weekday_format_combo)
+        weekday_format_row.addStretch()
+        research_layout.addLayout(weekday_format_row)
+        
+        # 週の境界線表示
+        self.show_week_boundaries_check = QCheckBox("週の境界に縦線を表示")
+        self.show_week_boundaries_check.setChecked(self.graph_settings.get("show_week_boundaries", False))
+        self.show_week_boundaries_check.setToolTip("週の始まり/終わりに縦線を描画します")
+        self.show_week_boundaries_check.toggled.connect(lambda: self.update_setting("show_week_boundaries", self.show_week_boundaries_check.isChecked()))
+        research_layout.addWidget(self.show_week_boundaries_check)
+        
+        # 週の始まりの曜日
+        week_start_row = QHBoxLayout()
+        week_start_row.addWidget(QLabel("週の始まり:"))
+        self.week_boundary_day_combo = QComboBox()
+        self.week_boundary_day_combo.addItems(["monday", "sunday"])
+        self.week_boundary_day_combo.setCurrentText(self.graph_settings.get("week_boundary_day", "monday"))
+        self.week_boundary_day_combo.currentTextChanged.connect(lambda value: self.update_setting("week_boundary_day", value))
+        week_start_row.addWidget(self.week_boundary_day_combo)
+        week_start_row.addStretch()
+        research_layout.addLayout(week_start_row)
+        
+        # 深夜0時のラベル形式
+        midnight_row = QHBoxLayout()
+        midnight_row.addWidget(QLabel("24:00/0:00の表記:"))
+        self.midnight_label_combo = QComboBox()
+        self.midnight_label_combo.addItem("翌日の0:00 (例: 2日0:00)", "next_day")
+        self.midnight_label_combo.addItem("当日の24:00 (例: 1日24:00)", "same_day")
+        idx = self.midnight_label_combo.findData(self.graph_settings.get("midnight_label_format", "next_day"))
+        if idx >= 0:
+            self.midnight_label_combo.setCurrentIndex(idx)
+        self.midnight_label_combo.currentIndexChanged.connect(
+            lambda: self.update_setting("midnight_label_format", self.midnight_label_combo.currentData())
+        )
+        midnight_row.addWidget(self.midnight_label_combo)
+        midnight_row.addStretch()
+        research_layout.addLayout(midnight_row)
+        
+        research_group.setLayout(research_layout)
+        settings_layout.addWidget(research_group)
+
         save_btn = QPushButton("💾 グラフを保存")
         save_btn.setMinimumHeight(36)
         save_btn.clicked.connect(self.save_graph)
@@ -3573,6 +3659,10 @@ class MainWindow(QMainWindow):
             self.column_selection_cache[prev_key] = [
                 col for col, cb in self.column_checkboxes.items() if cb.isChecked()
             ]
+            # 最後に使用した選択パターンも保存（エリア間で共有）
+            self._last_column_selection = [
+                col for col, cb in self.column_checkboxes.items() if cb.isChecked()
+            ]
 
         # 既存のチェックボックスをクリア
         for checkbox in self.column_checkboxes.values():
@@ -3599,17 +3689,28 @@ class MainWindow(QMainWindow):
             self.current_dataframe = df
             self.current_time_column = tcol
             self.current_dataset_key = (code, ym)
+            
+            # 選択状態の復元: 1. 特定データセットのキャッシュ, 2. 最後の選択パターン, 3. 全選択
             saved_selection = self.column_selection_cache.get(self.current_dataset_key)
+            last_selection = getattr(self, "_last_column_selection", None)
             
             # 数値カラムを取得
             for c in df.columns:
                     col_str = str(c).lower()
                     if not any(keyword in col_str for keyword in ['date', 'time', '時刻', '日時', '日付']):
                         checkbox = QCheckBox(str(c))
-                        if saved_selection is None:
-                            checkbox.setChecked(True)  # デフォルトで選択
-                        else:
+                        if saved_selection is not None:
+                            # このデータセット固有のキャッシュがある場合
                             checkbox.setChecked(str(c) in saved_selection)
+                        elif last_selection is not None and str(c) in last_selection:
+                            # 最後に使用した選択パターンを適用（同じ列名のみ）
+                            checkbox.setChecked(True)
+                        elif last_selection is not None:
+                            # 最後に選択パターンがあり、この列が含まれていない場合
+                            checkbox.setChecked(False)
+                        else:
+                            # 初回は全選択
+                            checkbox.setChecked(True)
                         checkbox.toggled.connect(self.on_column_selection_changed)
                         self.column_checkbox_layout.addWidget(checkbox)
                         self.column_checkboxes[str(c)] = checkbox
@@ -4234,19 +4335,92 @@ class MainWindow(QMainWindow):
 
         colors = ['#0068B7', '#00A0E9', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#14b8a6']
 
+        # 曜日フォーマット設定
+        weekday_names_jp = ["月", "火", "水", "木", "金", "土", "日"]
+        weekday_names_jp_full = ["月曜日", "火曜日", "水曜日", "木曜日", "金曜日", "土曜日", "日曜日"]
+        weekday_names_en = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+        weekday_names_en_full = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+        
+        def get_weekday_str(dt, fmt):
+            """曜日文字列を取得"""
+            if pd.isna(dt):
+                return ""
+            wd = dt.weekday()
+            if fmt == "short":
+                return f"({weekday_names_jp[wd]})"
+            elif fmt == "full":
+                return weekday_names_jp_full[wd]
+            elif fmt == "en_short":
+                return weekday_names_en[wd]
+            elif fmt == "en_full":
+                return weekday_names_en_full[wd]
+            return f"({weekday_names_jp[wd]})"
+
         if time_column and time_column in df_filtered.columns:
             x_data = df_filtered[time_column]
+            
+            # 時間データをdatetimeに変換
+            x_datetime = pd.to_datetime(x_data, errors="coerce")
+            
             for idx, column in enumerate(columns):
                 if column in df_filtered.columns:
                     valid = df_filtered[column].notna()
                     canvas.ax.plot(
-                        x_data[valid],
+                        x_datetime[valid],
                         df_filtered[column][valid],
                         label=str(column),
                         color=colors[idx % len(colors)],
                         linewidth=settings["linewidth"],
                         alpha=0.9,
                     )
+            
+            # X軸ラベルのカスタマイズ（曜日表示対応）
+            if settings.get("show_weekday", False):
+                # カスタムフォーマッタを使用
+                import matplotlib.dates as mdates
+                
+                weekday_fmt = settings.get("weekday_format", "short")
+                midnight_fmt = settings.get("midnight_label_format", "next_day")
+                
+                def custom_date_formatter(x, pos):
+                    try:
+                        dt = mdates.num2date(x)
+                        # 24:00表記の処理
+                        if midnight_fmt == "same_day" and dt.hour == 0 and dt.minute == 0:
+                            # 前日の24:00として表示
+                            prev_day = dt - pd.Timedelta(days=1)
+                            weekday_str = get_weekday_str(prev_day, weekday_fmt)
+                            return f"{prev_day.day}日24:00\n{weekday_str}"
+                        else:
+                            weekday_str = get_weekday_str(dt, weekday_fmt)
+                            return f"{dt.month}/{dt.day} {dt.hour:02d}:{dt.minute:02d}\n{weekday_str}"
+                    except:
+                        return ""
+                
+                canvas.ax.xaxis.set_major_formatter(ticker.FuncFormatter(custom_date_formatter))
+            
+            # 週の境界線を表示
+            if settings.get("show_week_boundaries", False):
+                week_start = settings.get("week_boundary_day", "monday")
+                target_weekday = 0 if week_start == "monday" else 6  # 0=月曜, 6=日曜
+                
+                # 時系列データから週の境界を探す
+                unique_dates = x_datetime.dt.normalize().unique()
+                unique_dates = pd.Series(unique_dates).sort_values()
+                
+                for dt in unique_dates:
+                    if pd.notna(dt):
+                        if dt.weekday() == target_weekday:
+                            # 週の始まりに縦線を描画
+                            canvas.ax.axvline(
+                                x=dt, 
+                                color='#6366f1', 
+                                linestyle='--', 
+                                linewidth=1.5, 
+                                alpha=0.7,
+                                label='_nolegend_'
+                            )
+            
             # X軸ラベル
             if settings.get("show_xlabel", True):
                 canvas.ax.set_xlabel(
@@ -4304,13 +4478,21 @@ class MainWindow(QMainWindow):
             )
 
         # タイトル
+        # 曜日名のリスト（タイトル用）
+        weekday_names_jp_title = ["月", "火", "水", "木", "金", "土", "日"]
+        
         if settings["title"]:
             title_text = settings["title"]
         else:
             title_text = f"{AREA_INFO[area_code].name}エリア - {year_month[:4]}年{year_month[4:6]}月"
             if selected_date and selected_date != "all":
                 date_obj = pd.to_datetime(selected_date)
-                title_text += f" ({date_obj.strftime('%m月%d日')})"
+                # 曜日表示設定がオンの場合は曜日も追加
+                if settings.get("show_weekday", False):
+                    wd = date_obj.weekday()
+                    title_text += f" ({date_obj.strftime('%m月%d日')} {weekday_names_jp_title[wd]}曜日)"
+                else:
+                    title_text += f" ({date_obj.strftime('%m月%d日')})"
 
         if settings.get("show_title", True):
             canvas.ax.set_title(
