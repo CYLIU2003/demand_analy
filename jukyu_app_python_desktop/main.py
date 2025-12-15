@@ -654,6 +654,12 @@ class MainWindow(QMainWindow):
             "show_week_boundaries": False,  # 週の境界線を表示
             "week_boundary_day": "monday",  # 週の始まり: monday or sunday
             "midnight_label_format": "next_day",  # "next_day": 翌日0:00, "same_day": 当日24:00
+            # 横軸日付表示のカスタマイズ
+            "xaxis_date_filter": "all",  # "all", "specific_weekdays", "every_n_days", "custom"
+            "xaxis_weekdays": [0, 1, 2, 3, 4, 5, 6],  # 表示する曜日 (0=月, 6=日)
+            "xaxis_every_n_days": 1,  # N日おきに表示
+            "xaxis_custom_dates": [],  # カスタム日付リスト (YYYY-MM-DD形式)
+            "xaxis_tick_rotation": 45,  # X軸ラベルの回転角度
         }
         
         # グラフコレクション
@@ -3237,6 +3243,94 @@ class MainWindow(QMainWindow):
         midnight_row.addStretch()
         research_layout.addLayout(midnight_row)
         
+        # セパレーター
+        separator = QFrame()
+        separator.setFrameShape(QFrame.HLine)
+        separator.setFrameShadow(QFrame.Sunken)
+        separator.setStyleSheet("background-color: #bfdbfe;")
+        research_layout.addWidget(separator)
+        
+        # 横軸日付フィルター
+        xaxis_filter_label = QLabel("📅 横軸に表示する日付の制御")
+        xaxis_filter_label.setStyleSheet("font-weight: 600; color: #0068B7; margin-top: 8px;")
+        research_layout.addWidget(xaxis_filter_label)
+        
+        # フィルタータイプ選択
+        xaxis_filter_type_row = QHBoxLayout()
+        xaxis_filter_type_row.addWidget(QLabel("表示モード:"))
+        self.xaxis_date_filter_combo = QComboBox()
+        self.xaxis_date_filter_combo.addItem("すべての日付", "all")
+        self.xaxis_date_filter_combo.addItem("特定の曜日のみ", "specific_weekdays")
+        self.xaxis_date_filter_combo.addItem("N日おきに表示", "every_n_days")
+        self.xaxis_date_filter_combo.setToolTip("横軸に表示する日付の範囲を制御します")
+        idx = self.xaxis_date_filter_combo.findData(self.graph_settings.get("xaxis_date_filter", "all"))
+        if idx >= 0:
+            self.xaxis_date_filter_combo.setCurrentIndex(idx)
+        self.xaxis_date_filter_combo.currentIndexChanged.connect(
+            lambda: self.on_xaxis_filter_mode_changed()
+        )
+        xaxis_filter_type_row.addWidget(self.xaxis_date_filter_combo)
+        xaxis_filter_type_row.addStretch()
+        research_layout.addLayout(xaxis_filter_type_row)
+        
+        # 曜日選択（特定の曜日モード用）
+        self.xaxis_weekday_frame = QFrame()
+        xaxis_weekday_layout = QVBoxLayout(self.xaxis_weekday_frame)
+        xaxis_weekday_layout.setContentsMargins(15, 5, 0, 5)
+        xaxis_weekday_layout.setSpacing(5)
+        
+        weekday_label = QLabel("表示する曜日:")
+        weekday_label.setStyleSheet("color: #6b7280; font-size: 11px;")
+        xaxis_weekday_layout.addWidget(weekday_label)
+        
+        self.xaxis_weekday_checks = {}
+        weekday_names = ["月曜", "火曜", "水曜", "木曜", "金曜", "土曜", "日曜"]
+        weekday_grid = QGridLayout()
+        weekday_grid.setSpacing(5)
+        for i, name in enumerate(weekday_names):
+            check = QCheckBox(name)
+            check.setChecked(i in self.graph_settings.get("xaxis_weekdays", [0, 1, 2, 3, 4, 5, 6]))
+            check.toggled.connect(lambda checked, idx=i: self.on_xaxis_weekday_changed())
+            self.xaxis_weekday_checks[i] = check
+            weekday_grid.addWidget(check, i // 4, i % 4)
+        xaxis_weekday_layout.addLayout(weekday_grid)
+        research_layout.addWidget(self.xaxis_weekday_frame)
+        
+        # N日おき設定（every_n_daysモード用）
+        self.xaxis_every_n_frame = QFrame()
+        xaxis_every_n_layout = QHBoxLayout(self.xaxis_every_n_frame)
+        xaxis_every_n_layout.setContentsMargins(15, 5, 0, 5)
+        xaxis_every_n_layout.addWidget(QLabel("間隔:"))
+        self.xaxis_every_n_spin = QSpinBox()
+        self.xaxis_every_n_spin.setRange(1, 30)
+        self.xaxis_every_n_spin.setValue(self.graph_settings.get("xaxis_every_n_days", 1))
+        self.xaxis_every_n_spin.setSuffix(" 日おき")
+        self.xaxis_every_n_spin.setToolTip("何日おきに日付ラベルを表示するか")
+        self.xaxis_every_n_spin.valueChanged.connect(
+            lambda: self.update_setting("xaxis_every_n_days", self.xaxis_every_n_spin.value())
+        )
+        xaxis_every_n_layout.addWidget(self.xaxis_every_n_spin)
+        xaxis_every_n_layout.addStretch()
+        research_layout.addWidget(self.xaxis_every_n_frame)
+        
+        # X軸ラベル回転角度
+        rotation_row = QHBoxLayout()
+        rotation_row.addWidget(QLabel("ラベル回転角度:"))
+        self.xaxis_rotation_spin = QSpinBox()
+        self.xaxis_rotation_spin.setRange(0, 90)
+        self.xaxis_rotation_spin.setValue(self.graph_settings.get("xaxis_tick_rotation", 45))
+        self.xaxis_rotation_spin.setSuffix(" °")
+        self.xaxis_rotation_spin.setToolTip("X軸ラベルの回転角度（見やすさ調整用）")
+        self.xaxis_rotation_spin.valueChanged.connect(
+            lambda: self.update_setting("xaxis_tick_rotation", self.xaxis_rotation_spin.value())
+        )
+        rotation_row.addWidget(self.xaxis_rotation_spin)
+        rotation_row.addStretch()
+        research_layout.addLayout(rotation_row)
+        
+        # 初期表示状態を設定
+        self.on_xaxis_filter_mode_changed()
+        
         research_group.setLayout(research_layout)
         settings_layout.addWidget(research_group)
 
@@ -3596,6 +3690,24 @@ class MainWindow(QMainWindow):
     def update_setting(self, key, value):
         # 設定を更新
         self.graph_settings[key] = value
+    
+    def on_xaxis_filter_mode_changed(self):
+        """横軸日付フィルターモード変更時の処理"""
+        mode = self.xaxis_date_filter_combo.currentData()
+        self.update_setting("xaxis_date_filter", mode)
+        
+        # モードに応じてUIの表示/非表示を切り替え
+        if hasattr(self, "xaxis_weekday_frame"):
+            self.xaxis_weekday_frame.setVisible(mode == "specific_weekdays")
+        if hasattr(self, "xaxis_every_n_frame"):
+            self.xaxis_every_n_frame.setVisible(mode == "every_n_days")
+    
+    def on_xaxis_weekday_changed(self):
+        """横軸表示曜日変更時の処理"""
+        selected_weekdays = [
+            idx for idx, check in self.xaxis_weekday_checks.items() if check.isChecked()
+        ]
+        self.update_setting("xaxis_weekdays", selected_weekdays)
 
     def populate_preview_table(self, df: pd.DataFrame | None):
         # プレビュー表を更新
@@ -4374,11 +4486,37 @@ class MainWindow(QMainWindow):
                         alpha=0.9,
                     )
             
+            # X軸の目盛り位置を制御（日付フィルター機能）
+            import matplotlib.dates as mdates
+            xaxis_filter = settings.get("xaxis_date_filter", "all")
+            
+            if xaxis_filter != "all":
+                # フィルタリングされた日付のみ表示
+                unique_dates = x_datetime.dt.normalize().unique()
+                unique_dates = pd.Series(unique_dates).sort_values()
+                
+                filtered_dates = []
+                
+                if xaxis_filter == "specific_weekdays":
+                    # 特定の曜日のみ表示
+                    selected_weekdays = settings.get("xaxis_weekdays", [0, 1, 2, 3, 4, 5, 6])
+                    for dt in unique_dates:
+                        if pd.notna(dt) and dt.weekday() in selected_weekdays:
+                            filtered_dates.append(dt)
+                
+                elif xaxis_filter == "every_n_days":
+                    # N日おきに表示
+                    n = settings.get("xaxis_every_n_days", 1)
+                    for i, dt in enumerate(unique_dates):
+                        if pd.notna(dt) and i % n == 0:
+                            filtered_dates.append(dt)
+                
+                # フィルタリングされた日付を目盛り位置に設定
+                if filtered_dates:
+                    canvas.ax.set_xticks(filtered_dates)
+            
             # X軸ラベルのカスタマイズ（曜日表示対応）
             if settings.get("show_weekday", False):
-                # カスタムフォーマッタを使用
-                import matplotlib.dates as mdates
-                
                 weekday_fmt = settings.get("weekday_format", "short")
                 midnight_fmt = settings.get("midnight_label_format", "next_day")
                 
@@ -4431,7 +4569,10 @@ class MainWindow(QMainWindow):
                 )
             else:
                 canvas.ax.set_xlabel("")
-            canvas.fig.autofmt_xdate(rotation=45)
+            
+            # X軸ラベルの回転角度を設定
+            rotation_angle = settings.get("xaxis_tick_rotation", 45)
+            canvas.fig.autofmt_xdate(rotation=rotation_angle)
         else:
             x_axis = range(len(df_filtered))
             for idx, column in enumerate(columns):
